@@ -1,0 +1,7 @@
+[extend]
+useDefault = true
+
+# Development mode's throwaway credentials are public on purpose.
+[[allowlists]]
+description = "Example environment file"
+paths = ['''^\.env\.example$''']

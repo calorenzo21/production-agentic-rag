@@ -1,0 +1,330 @@
+# Production mode: every difference from development mode (compose.yaml).
+# Started by `make prod`. A separate project name keeps its volumes apart from development mode.
+name: paper-curator-prod
+
+x-hardening: &hardening
+  restart: unless-stopped
+  pids_limit: 4096
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+# `!reset` is written under each service, never in an anchor: Compose versions differ in whether
+# they honour it through an alias, and a variable left behind would override the secret file.
+x-api-environment: &api-environment
+  OPENSEARCH__URL: https://opensearch:9200
+  OPENSEARCH__CA_CERT_PATH: /run/secrets/opensearch_ca
+  LOG__FORMAT: json
+
+x-api-secrets: &api-secrets
+  - source: curator_db_password
+    target: postgres__password
+  - source: curator_opensearch_password
+    target: opensearch__password
+  - opensearch_ca
+
+x-airflow-environment: &airflow-environment
+  AIRFLOW__API__BASE_URL: https://airflow.localhost
+  AIRFLOW__LOGGING__JSON_LOGS: "true"
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD: cat /run/secrets/airflow_database_url
+  AIRFLOW__CORE__FERNET_KEY_CMD: cat /run/secrets/airflow_fernet_key
+  AIRFLOW__API_AUTH__JWT_SECRET_CMD: cat /run/secrets/airflow_jwt_secret
+  AIRFLOW__API__SECRET_KEY_CMD: cat /run/secrets/airflow_api_secret_key
+
+x-airflow-secrets: &airflow-secrets
+  - airflow_database_url
+  - airflow_fernet_key
+  - airflow_jwt_secret
+  - airflow_api_secret_key
+
+services:
+  caddy:
+    <<: *hardening
+    build: deploy/caddy
+    image: paper-curator-caddy:local
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    mem_limit: 128m
+    cpus: 0.5
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+      airflow-apiserver:
+        condition: service_healthy
+      opensearch-dashboards:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, --quiet, --output-document=/dev/null, http://localhost:8081/]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    <<: *hardening
+    user: postgres
+    mem_limit: 1g
+    cpus: 1
+    # PostgreSQL can only write JSON logs to a file, so point that file at the container's stdout.
+    entrypoint:
+      - sh
+      - -c
+      - mkdir -p /tmp/logs && ln -sf /proc/1/fd/1 /tmp/logs/postgres.json && exec docker-entrypoint.sh "$$@"
+      - --
+    command:
+      - postgres
+      - -c
+      - logging_collector=on
+      - -c
+      - log_destination=jsonlog
+      - -c
+      - log_directory=/tmp/logs
+      - -c
+      - log_filename=postgres.log
+      - -c
+      - log_rotation_age=0
+      - -c
+      - log_rotation_size=0
+    environment:
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=peer
+      POSTGRES_PASSWORD: !reset null
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      CURATOR_DB_PASSWORD: !reset null
+      CURATOR_DB_PASSWORD_FILE: /run/secrets/curator_db_password
+      AIRFLOW_DB_PASSWORD: !reset null
+      AIRFLOW_DB_PASSWORD_FILE: /run/secrets/airflow_db_password
+    secrets:
+      - postgres_superuser_password
+      - curator_db_password
+      - airflow_db_password
+    ports: !reset []
+    networks:
+      - data
+
+  opensearch:
+    <<: *hardening
+    mem_limit: 2g
+    cpus: 2
+    environment:
+      DISABLE_SECURITY_PLUGIN: !reset null
+    volumes:
+      - ./deploy/opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - ./deploy/opensearch/log4j2.properties:/usr/share/opensearch/config/log4j2.properties:ro
+    secrets:
+      - source: opensearch_ca
+        target: /usr/share/opensearch/config/certs/ca.crt
+      - source: opensearch_node_certificate
+        target: /usr/share/opensearch/config/certs/node.crt
+      - source: opensearch_node_key
+        target: /usr/share/opensearch/config/certs/node.key
+      - source: opensearch_internal_users
+        target: /usr/share/opensearch/config/opensearch-security/internal_users.yml
+      - curator_opensearch_password
+    ports: !reset []
+    networks:
+      - search
+    healthcheck:
+      test: >-
+        printf 'user = "curator:%s"' "$$(cat /run/secrets/curator_opensearch_password)"
+        | curl --config - --fail --silent --cacert config/certs/ca.crt
+        https://localhost:9200/_cluster/health
+
+  opensearch-dashboards:
+    <<: *hardening
+    mem_limit: 1g
+    cpus: 1
+    entrypoint: [/usr/local/bin/dashboards-entrypoint.sh]
+    environment:
+      OPENSEARCH_HOSTS: !reset null
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: !reset null
+    volumes:
+      - ./deploy/opensearch/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./deploy/opensearch/dashboards-entrypoint.sh:/usr/local/bin/dashboards-entrypoint.sh:ro
+    secrets:
+      - opensearch_ca
+      - opensearch_dashboards_password
+      - opensearch_dashboards_cookie_password
+    ports: !reset []
+    networks:
+      - edge
+      - search
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:5601/app/login]
+
+  migrate:
+    <<: *hardening
+    restart: "no"
+    mem_limit: 256m
+    cpus: 0.5
+    read_only: true
+    environment:
+      <<: *api-environment
+      POSTGRES__PASSWORD: !reset null
+      OPENSEARCH__PASSWORD: !reset null
+    secrets: *api-secrets
+    networks:
+      - data
+
+  api:
+    <<: *hardening
+    mem_limit: 512m
+    cpus: 1
+    read_only: true
+    tmpfs:
+      - /tmp
+    command:
+      - uvicorn
+      - --factory
+      - paper_curator.main:create_app
+      - --host=0.0.0.0
+      - --port=8000
+      - --no-server-header
+    environment:
+      <<: *api-environment
+      POSTGRES__PASSWORD: !reset null
+      OPENSEARCH__PASSWORD: !reset null
+    secrets: *api-secrets
+    volumes: !reset []
+    ports: !reset []
+    networks:
+      - edge
+      - data
+      - search
+
+  airflow-init:
+    <<: *hardening
+    restart: "no"
+    mem_limit: 1g
+    cpus: 1
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
+      AIRFLOW_ADMIN_PASSWORD: !reset null
+      AIRFLOW_ADMIN_PASSWORD_FILE: /run/secrets/airflow_admin_password
+    secrets:
+      - airflow_database_url
+      - airflow_fernet_key
+      - airflow_jwt_secret
+      - airflow_api_secret_key
+      - airflow_admin_password
+    networks:
+      - data
+
+  airflow-apiserver:
+    <<: *hardening
+    mem_limit: 1g
+    cpus: 1
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
+    secrets: *airflow-secrets
+    ports: !reset []
+    networks:
+      - edge
+      - data
+
+  airflow-scheduler:
+    <<: *hardening
+    mem_limit: 1536m
+    cpus: 1.5
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
+    secrets: *airflow-secrets
+    networks:
+      - data
+
+  airflow-dag-processor:
+    <<: *hardening
+    mem_limit: 768m
+    cpus: 0.5
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
+    secrets: *airflow-secrets
+    networks:
+      - data
+
+  airflow-triggerer:
+    <<: *hardening
+    mem_limit: 768m
+    cpus: 0.5
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
+    secrets: *airflow-secrets
+    networks:
+      - data
+
+networks:
+  edge:
+  data:
+    internal: true
+  search:
+    internal: true
+
+volumes:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  postgres_superuser_password:
+    file: secrets/postgres_superuser_password
+  curator_db_password:
+    file: secrets/curator_db_password
+  airflow_db_password:
+    file: secrets/airflow_db_password
+  airflow_database_url:
+    file: secrets/airflow_database_url
+  airflow_fernet_key:
+    file: secrets/airflow_fernet_key
+  airflow_jwt_secret:
+    file: secrets/airflow_jwt_secret
+  airflow_api_secret_key:
+    file: secrets/airflow_api_secret_key
+  airflow_admin_password:
+    file: secrets/airflow_admin_password
+  curator_opensearch_password:
+    file: secrets/curator_opensearch_password
+  opensearch_dashboards_password:
+    file: secrets/opensearch_dashboards_password
+  opensearch_dashboards_cookie_password:
+    file: secrets/opensearch_dashboards_cookie_password
+  opensearch_internal_users:
+    file: secrets/opensearch_internal_users.yml
+  opensearch_ca:
+    file: secrets/opensearch_ca.crt
+  opensearch_node_certificate:
+    file: secrets/opensearch_node.crt
+  opensearch_node_key:
+    file: secrets/opensearch_node.key
