@@ -1,0 +1,3 @@
+#!/bin/sh
+if grep -iqE 'co-authored-by:.*(claude|anthropic)|generated with.*claude|noreply@anthropic\.com' "$1"; then
+  echo 'commit-msg: el mensaje contiene atribución a Claude/Anthropic.' >&2; exit 1; fi
