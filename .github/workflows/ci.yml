@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: 0.11.23
+      - run: uv sync --frozen
+      - name: Format, lint, types and tests
+        run: make check
+
+  secret-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/amd64
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: 0.11.23
+      - run: uv sync --frozen
+      - name: Start the fake Ollama on the host, where the real one runs
+        run: uv run python tests/fake_ollama.py &
+      - name: Resolve the proxy's hostnames
+        run: echo "127.0.0.1 airflow.localhost opensearch.localhost" | sudo tee -a /etc/hosts
+
+      - name: Start development mode
+        run: |
+          cp .env.example .env
+          make dev
+      - name: Smoke test development mode
+        run: make smoke
+      - name: Logs from development mode
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Stop development mode
+        run: make down
+
+      - name: Start production mode
+        run: |
+          rm .env
+          make prod
+      - name: Smoke test production mode
+        run: make prod-smoke
+      - name: Logs from production mode
+        if: failure()
+        run: COMPOSE_FILE=compose.yaml:compose.prod.yaml docker compose logs --no-color --tail 200

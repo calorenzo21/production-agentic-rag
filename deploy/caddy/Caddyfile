@@ -1,0 +1,33 @@
+{
+	# Caddy's internal certificate authority. The runbook removes this for public certificates.
+	local_certs
+	skip_install_trust
+	admin off
+	servers {
+		protocols h1 h2
+	}
+}
+
+(hardening) {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	log
+}
+
+localhost {
+	import hardening
+	reverse_proxy api:8000
+}
+
+airflow.localhost {
+	import hardening
+	reverse_proxy airflow-apiserver:8080
+}
+
+opensearch.localhost {
+	import hardening
+	reverse_proxy opensearch-dashboards:5601
+}

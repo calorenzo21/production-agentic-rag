@@ -1,0 +1,187 @@
+# Development mode, started by a plain `docker compose up`.
+# Every difference in production mode lives in compose.prod.yaml.
+name: paper-curator
+
+x-api: &api
+  build: .
+  image: paper-curator:local
+  environment:
+    POSTGRES__HOST: postgres
+    POSTGRES__USER: curator
+    POSTGRES__PASSWORD: ${POSTGRES__PASSWORD:-}
+    POSTGRES__DATABASE: paper_curator
+    OPENSEARCH__URL: http://opensearch:9200
+    OPENSEARCH__USERNAME: curator
+    OPENSEARCH__PASSWORD: ${OPENSEARCH__PASSWORD:-}
+    OLLAMA__URL: ${OLLAMA__URL:-http://host.docker.internal:11434}
+  extra_hosts:
+    - host.docker.internal:host-gateway
+
+x-airflow: &airflow
+  image: apache/airflow:3.3.2-python3.13
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API__WORKERS: "1"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${AIRFLOW_DB_PASSWORD:-}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-}
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+
+x-airflow-depends-on: &airflow-depends-on
+  airflow-init:
+    condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:18.6-trixie
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      CURATOR_DB_PASSWORD: ${POSTGRES__PASSWORD:-}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:-}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      # TCP on purpose: the temporary server used during first-time setup only listens on a socket.
+      test: [CMD-SHELL, pg_isready --host=127.0.0.1 --username=postgres]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  opensearch:
+    image: opensearchproject/opensearch:3.9.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - 127.0.0.1:9200:9200
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:9200/_cluster/health]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.9.0
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    ports:
+      - 127.0.0.1:5601:5601
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:5601/api/status]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    <<: *api
+    command: [alembic, upgrade, head]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *api
+    command:
+      - uvicorn
+      - --factory
+      - paper_curator.main:create_app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+      - --reload-dir=/app/src
+    volumes:
+      - ./src:/app/src:ro
+    ports:
+      - 127.0.0.1:8000:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/live', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow
+    entrypoint: [/opt/airflow/init.sh]
+    environment:
+      <<: *airflow-environment
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
+    volumes:
+      - ./deploy/airflow/init.sh:/opt/airflow/init.sh:ro
+      - airflow-logs:/opt/airflow/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-apiserver:
+    <<: *airflow
+    command: api-server
+    ports:
+      - 127.0.0.1:8080:8080
+    depends_on: *airflow-depends-on
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:8080/api/v2/monitor/health]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  airflow-scheduler:
+    <<: *airflow
+    command: scheduler
+    depends_on: *airflow-depends-on
+    healthcheck:
+      test: [CMD-SHELL, curl --fail --silent http://localhost:8974/health]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  airflow-dag-processor:
+    <<: *airflow
+    command: dag-processor
+    depends_on: *airflow-depends-on
+    healthcheck:
+      test: airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"
+      interval: 30s
+      timeout: 25s
+      retries: 10
+
+  airflow-triggerer:
+    <<: *airflow
+    command: triggerer
+    depends_on: *airflow-depends-on
+    healthcheck:
+      test: airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"
+      interval: 30s
+      timeout: 25s
+      retries: 10
+
+volumes:
+  postgres-data:
+  opensearch-data:
+  airflow-logs:

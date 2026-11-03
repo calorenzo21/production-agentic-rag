@@ -1,0 +1,17 @@
+server.host: 0.0.0.0
+server.name: paper-curator
+
+opensearch.hosts:
+  - https://opensearch:9200
+opensearch.ssl.verificationMode: full
+opensearch.ssl.certificateAuthorities:
+  - /run/secrets/opensearch_ca
+opensearch.username: kibanaserver
+opensearch.password: ${OPENSEARCH_DASHBOARDS_PASSWORD}
+opensearch.requestHeadersAllowlist:
+  - authorization
+  - securitytenant
+
+opensearch_security.cookie.secure: true
+opensearch_security.cookie.password: ${OPENSEARCH_DASHBOARDS_COOKIE_PASSWORD}
+opensearch_security.multitenancy.enabled: false
