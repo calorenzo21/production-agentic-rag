@@ -47,11 +47,13 @@ def test_health_really_reaches_every_dependency(stack: Stack) -> None:
     }
 
 
-def test_migrations_ran_before_the_api_started() -> None:
+def test_the_schema_is_at_the_latest_migration() -> None:
+    latest = run_compose("exec", "-T", "api", "alembic", "heads").stdout.split()[0]
+
     version = psql("paper_curator", "SELECT version_num FROM alembic_version")
 
     assert version.returncode == 0, version.stderr
-    assert version.stdout.strip() == "0001"
+    assert version.stdout.strip() == latest
 
 
 def test_each_database_user_reaches_its_own_database(stack: Stack) -> None:

@@ -11,16 +11,18 @@ SECRETS = REPOSITORY / "secrets"
 PRODUCTION_COMPOSE_FILE = "compose.yaml:compose.prod.yaml"
 
 
-def run_compose(
-    *arguments: str, mode: str | None = None, check: bool = True
-) -> subprocess.CompletedProcess[str]:
+def compose_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    if (mode or os.environ["STACK_MODE"]) == "prod":
+    if os.environ["STACK_MODE"] == "prod":
         environment["COMPOSE_FILE"] = PRODUCTION_COMPOSE_FILE
+    return environment
+
+
+def run_compose(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", "compose", *arguments],
         cwd=REPOSITORY,
-        env=environment,
+        env=compose_environment(),
         check=check,
         capture_output=True,
         text=True,

@@ -19,6 +19,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.checks = checks
             yield
 
-    app = FastAPI(title="arXiv Paper Curator", lifespan=lifespan)
+    app = FastAPI(
+        title="arXiv Paper Curator",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.include_router(health_router)
     return app

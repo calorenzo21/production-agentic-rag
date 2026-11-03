@@ -10,7 +10,7 @@ Install Docker Engine with the Compose plugin, `make` and `openssl`, then:
 sudo sysctl -w vm.max_map_count=262144   # Also add it to /etc/sysctl.d so that it survives reboots.
 ```
 
-Allow only ports 80, 443 and your SSH port through the firewall. Allow at least 12 GB of memory: the limits in `compose.prod.yaml` add up to about 8.5 GB and the stack uses about 3 GB when idle.
+Allow only ports 80, 443 and your SSH port through the firewall. Allow at least 12 GB of memory: the memory limits in `compose.prod.yaml` add up to about 8.7 GB and the stack uses about 3 GB when idle.
 
 Clone the repository. Images are built from source on the server, and no registry is involved.
 
@@ -36,6 +36,12 @@ email ops@example.com
 
 Caddy then obtains and renews public certificates itself. Port 80 must stay reachable for the challenge.
 
+With a real domain, also add this line to the `header` block of the `hardening` snippet. It is left out for `localhost` because browsers would then apply it to every local project:
+
+```
+Strict-Transport-Security "max-age=31536000"
+```
+
 ## 4. Allow only your IP to reach internal tools
 
 The API stays public. Restrict the Airflow UI and OpenSearch Dashboards in `deploy/caddy/Caddyfile`, in addition to their logins:
@@ -53,11 +59,22 @@ Do the same for `opensearch.example.com`.
 
 ## 5. Install Ollama
 
-Install Ollama natively and pull your models. On Linux, `host.docker.internal` resolves to the Docker bridge, not to the server's loopback, so Ollama must also listen on the bridge. Never bind it to a public interface:
+Install Ollama natively and pull your models. On Linux, `host.docker.internal` resolves to the Docker bridge, not to the server's loopback, so Ollama must listen on the bridge instead. Never bind it to a public interface. Run `sudo systemctl edit ollama` and add:
+
+```
+[Unit]
+After=docker.service
+Requires=docker.service
+
+[Service]
+Environment="OLLAMA_HOST=172.17.0.1:11434"
+```
+
+The bridge must exist before Ollama starts, which is why this depends on Docker. Then restart Ollama. It no longer listens on loopback, so the `ollama` command needs the address too:
 
 ```sh
-sudo systemctl edit ollama   # Add: [Service] / Environment="OLLAMA_HOST=172.17.0.1:11434"
 sudo systemctl restart ollama
+OLLAMA_HOST=172.17.0.1:11434 ollama list
 ```
 
 If your firewall filters Docker's traffic, allow port 11434 from `172.16.0.0/12` only.
@@ -74,7 +91,7 @@ OLLAMA__URL=http://ollama.internal:11434
 make prod
 ```
 
-This generates any missing secret in `secrets/` and starts the stack. Copy `secrets/` somewhere safe, because the backups below are of no use for OpenSearch logins and Airflow's encrypted values without it.
+This generates any missing secret in `secrets/` and starts the stack. Copy `secrets/` somewhere safe: Airflow's encrypted values cannot be read from a backup without its Fernet key.
 
 Generating a secret again does not change a password that is already in use, because PostgreSQL and OpenSearch only read theirs on first start. To rotate one, change it inside the service first, then replace the file.
 

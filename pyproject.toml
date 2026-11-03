@@ -31,8 +31,6 @@ packages = ["src/paper_curator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
-markers = ["stack: drives a running Compose stack; needs STACK_MODE set to dev or prod"]
 
 [tool.ruff]
 line-length = 100

@@ -155,7 +155,7 @@ def test_health_response_reveals_no_versions_or_hostnames(stack: Stack) -> None:
     assert set(response.json()) == {"status", "dependencies"}
 
 
-@pytest.mark.parametrize("service", ["api", "caddy"])
+@pytest.mark.parametrize("service", ["api", "caddy", "migrate"])
 def test_logs_are_structured(service: str, stack: Stack) -> None:
     httpx.get(f"{stack.api_url}/api/v1/health/live", verify=stack.verify)
 
@@ -168,7 +168,15 @@ def test_logs_are_structured(service: str, stack: Stack) -> None:
 
 @pytest.mark.parametrize(
     "service",
-    ["postgres", "opensearch", "opensearch-dashboards", "airflow-scheduler"],
+    [
+        "postgres",
+        "opensearch",
+        "opensearch-dashboards",
+        "airflow-apiserver",
+        "airflow-scheduler",
+        "airflow-dag-processor",
+        "airflow-triggerer",
+    ],
 )
 def test_services_with_startup_noise_still_log_structured_lines(service: str) -> None:
     lines = run_compose("logs", "--no-log-prefix", service).stdout.splitlines()
@@ -190,4 +198,6 @@ def test_long_running_services_have_limits_and_restart_policies() -> None:
 
     for name in LONG_RUNNING:
         assert config[name].get("mem_limit"), name
+        assert config[name].get("cpus"), name
+        assert config[name].get("pids_limit"), name
         assert config[name].get("restart") == "unless-stopped", name

@@ -113,3 +113,10 @@ def test_real_checks_report_unreachable_dependencies_as_down(
         "status": "unhealthy",
         "dependencies": {"postgres": "down", "opensearch": "down", "ollama": "down"},
     }
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_the_api_exposes_only_health_endpoints(path: str) -> None:
+    client = client_with(Checks(postgres=up, opensearch=up, ollama=up))
+
+    assert client.get(path).status_code == 404

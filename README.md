@@ -15,6 +15,8 @@ Known limits:
 - The API has no authentication or rate limiting yet. They arrive with its first endpoint other than health.
 - Logs are JSON once services are running. First-start output, JVM warnings and the Airflow scheduler's health check access lines are still plain text.
 - The internal OpenSearch certificates live for about two years and do not renew themselves.
+- Docker restarts a service that exits, not one that hangs. A hung service shows as `unhealthy` until someone restarts it.
+- OpenSearch Dashboards cannot read its password from a file, so a small entrypoint puts it in that process's environment. It stays out of `docker inspect`, but not out of the container itself.
 
 ## Architecture
 

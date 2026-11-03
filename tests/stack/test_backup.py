@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -6,17 +5,19 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-from tests.stack.support import PRODUCTION_COMPOSE_FILE, REPOSITORY, Stack, psql
+from tests.stack.support import REPOSITORY, Stack, compose_environment, psql
 
 DATABASES = ("paper_curator", "airflow")
 
 
 def run_script(*arguments: str) -> str:
-    environment = dict(os.environ)
-    if os.environ["STACK_MODE"] == "prod":
-        environment["COMPOSE_FILE"] = PRODUCTION_COMPOSE_FILE
     result = subprocess.run(
-        arguments, cwd=REPOSITORY, env=environment, check=True, capture_output=True, text=True
+        arguments,
+        cwd=REPOSITORY,
+        env=compose_environment(),
+        check=True,
+        capture_output=True,
+        text=True,
     )
     return result.stdout.strip()
 

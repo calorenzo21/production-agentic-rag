@@ -16,8 +16,10 @@ generate() { # name command...
     name="$1"
     shift
     if [ ! -f "$name" ]; then
-        "$@" >"$name"
-        chmod 444 "$name"
+        rm -f "$name.partial"
+        "$@" >"$name.partial"
+        chmod 444 "$name.partial"
+        mv "$name.partial" "$name"
         echo "Generated secrets/$name"
     fi
 }
@@ -28,8 +30,9 @@ fernet_key() { openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n'; }
 long_secret() { openssl rand -hex 48 | tr -d '\n'; }
 
 bcrypt() { # plaintext file
-    printf '%s\n' "$(cat "$1")" | docker run --interactive --rm "$CADDY_IMAGE" \
-        caddy hash-password --algorithm bcrypt | tail -n 1
+    output="$(printf '%s\n' "$(cat "$1")" | docker run --interactive --rm "$CADDY_IMAGE" \
+        caddy hash-password --algorithm bcrypt)" || return 1
+    printf '%s' "$output" | tail -n 1
 }
 
 airflow_database_url() {
@@ -37,26 +40,29 @@ airflow_database_url() {
 }
 
 internal_users() {
+    admin_hash="$(bcrypt opensearch_admin_password)"
+    dashboards_hash="$(bcrypt opensearch_dashboards_password)"
+    curator_hash="$(bcrypt curator_opensearch_password)"
     cat <<YAML
 _meta:
   type: internalusers
   config_version: 2
 admin:
-  hash: "$(bcrypt opensearch_admin_password)"
+  hash: "$admin_hash"
   reserved: true
   backend_roles:
     - admin
 kibanaserver:
-  hash: "$(bcrypt opensearch_dashboards_password)"
+  hash: "$dashboards_hash"
   reserved: true
 curator:
-  hash: "$(bcrypt curator_opensearch_password)"
+  hash: "$curator_hash"
   opendistro_security_roles:
     - readall_and_monitor
 YAML
 }
 
-for name in postgres_password curator_db_password airflow_db_password airflow_admin_password \
+for name in postgres_superuser_password curator_db_password airflow_db_password airflow_admin_password \
     opensearch_admin_password curator_opensearch_password opensearch_dashboards_password; do
     generate "$name" password
 done
@@ -77,7 +83,8 @@ if [ ! -f opensearch_ca.key ]; then
     echo "Generated secrets/opensearch_ca.crt"
 fi
 
-if [ ! -f opensearch_node.key ]; then
+if [ ! -f opensearch_node.crt ]; then
+    rm -f opensearch_node.key
     extensions="$(mktemp)"
     cat >"$extensions" <<CONFIG
 basicConstraints=critical,CA:FALSE

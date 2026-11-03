@@ -10,11 +10,15 @@
 
 (hardening) {
 	header {
-		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		-Server
 	}
 	log
+}
+
+# For the container's own healthcheck. This port is not published.
+http://localhost:8081 {
+	respond "ok"
 }
 
 localhost {
