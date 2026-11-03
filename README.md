@@ -138,6 +138,8 @@ make prod-restore BACKUP=backups/<timestamp>    # Stops writers, restores, start
 
 - Containers reach an Ollama that listens only on `127.0.0.1` through `host.docker.internal` under Colima, so Ollama needs no exposure to the network. On Linux it does not work this way, and the runbook covers it.
 - Colima's 12 GB is enough. Production mode uses about 3 GB when idle.
+- A standard GitHub Actions runner can build and test both modes, in about 7 minutes.
+- Compose versions treat `!reset` differently when it is reached through a YAML alias, so `compose.prod.yaml` writes it directly under each service. It is tested on Compose 2.38.2 and 5.7.0.
 - OpenSearch needed no memory changes under Colima beyond a 1 GB heap.
 - PostgreSQL 18 is the newest stable major. PostgreSQL 19 is still a release candidate.
 

@@ -4,7 +4,7 @@ The curator has never been deployed (see [ADR 0001](adr/0001-production-ready-wi
 
 ## 1. Prepare the server
 
-Install Docker Engine with the Compose plugin, `make` and `openssl`, then:
+Install Docker Engine with the Compose plugin (tested on 2.38.2 and 5.7.0), `make` and `openssl`, then:
 
 ```sh
 sudo sysctl -w vm.max_map_count=262144   # Also add it to /etc/sysctl.d so that it survives reboots.
