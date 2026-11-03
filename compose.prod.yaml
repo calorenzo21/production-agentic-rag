@@ -15,10 +15,10 @@ x-hardening: &hardening
       max-size: 10m
       max-file: "3"
 
+# `!reset` is written under each service, never in an anchor: Compose versions differ in whether
+# they honour it through an alias, and a variable left behind would override the secret file.
 x-api-environment: &api-environment
-  POSTGRES__PASSWORD: !reset null
   OPENSEARCH__URL: https://opensearch:9200
-  OPENSEARCH__PASSWORD: !reset null
   OPENSEARCH__CA_CERT_PATH: /run/secrets/opensearch_ca
   LOG__FORMAT: json
 
@@ -32,13 +32,9 @@ x-api-secrets: &api-secrets
 x-airflow-environment: &airflow-environment
   AIRFLOW__API__BASE_URL: https://airflow.localhost
   AIRFLOW__LOGGING__JSON_LOGS: "true"
-  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD: cat /run/secrets/airflow_database_url
-  AIRFLOW__CORE__FERNET_KEY: !reset null
   AIRFLOW__CORE__FERNET_KEY_CMD: cat /run/secrets/airflow_fernet_key
-  AIRFLOW__API_AUTH__JWT_SECRET: !reset null
   AIRFLOW__API_AUTH__JWT_SECRET_CMD: cat /run/secrets/airflow_jwt_secret
-  AIRFLOW__API__SECRET_KEY: !reset null
   AIRFLOW__API__SECRET_KEY_CMD: cat /run/secrets/airflow_api_secret_key
 
 x-airflow-secrets: &airflow-secrets
@@ -176,7 +172,10 @@ services:
     mem_limit: 256m
     cpus: 0.5
     read_only: true
-    environment: *api-environment
+    environment:
+      <<: *api-environment
+      POSTGRES__PASSWORD: !reset null
+      OPENSEARCH__PASSWORD: !reset null
     secrets: *api-secrets
     networks:
       - data
@@ -195,7 +194,10 @@ services:
       - --host=0.0.0.0
       - --port=8000
       - --no-server-header
-    environment: *api-environment
+    environment:
+      <<: *api-environment
+      POSTGRES__PASSWORD: !reset null
+      OPENSEARCH__PASSWORD: !reset null
     secrets: *api-secrets
     volumes: !reset []
     ports: !reset []
@@ -211,6 +213,10 @@ services:
     cpus: 1
     environment:
       <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
       AIRFLOW_ADMIN_PASSWORD: !reset null
       AIRFLOW_ADMIN_PASSWORD_FILE: /run/secrets/airflow_admin_password
     secrets:
@@ -226,7 +232,12 @@ services:
     <<: *hardening
     mem_limit: 1g
     cpus: 1
-    environment: *airflow-environment
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
     secrets: *airflow-secrets
     ports: !reset []
     networks:
@@ -237,7 +248,12 @@ services:
     <<: *hardening
     mem_limit: 1536m
     cpus: 1.5
-    environment: *airflow-environment
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
     secrets: *airflow-secrets
     networks:
       - data
@@ -246,7 +262,12 @@ services:
     <<: *hardening
     mem_limit: 768m
     cpus: 0.5
-    environment: *airflow-environment
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
     secrets: *airflow-secrets
     networks:
       - data
@@ -255,7 +276,12 @@ services:
     <<: *hardening
     mem_limit: 768m
     cpus: 0.5
-    environment: *airflow-environment
+    environment:
+      <<: *airflow-environment
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: !reset null
+      AIRFLOW__CORE__FERNET_KEY: !reset null
+      AIRFLOW__API_AUTH__JWT_SECRET: !reset null
+      AIRFLOW__API__SECRET_KEY: !reset null
     secrets: *airflow-secrets
     networks:
       - data
