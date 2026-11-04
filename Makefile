@@ -1,10 +1,14 @@
 .DEFAULT_GOAL := help
-.PHONY: help dev down prod prod-down check format smoke prod-smoke backup prod-backup restore prod-restore
+.PHONY: help hooks dev down prod prod-down check format smoke prod-smoke backup prod-backup restore prod-restore
 
 PROD := COMPOSE_FILE=compose.yaml:compose.prod.yaml
 
 help:
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "%-14s %s\n", $$1, $$2}'
+
+hooks: ## Install dependencies and enable this repository's git hooks
+	uv sync
+	git config core.hooksPath .githooks
 
 dev: ## Start development mode (needs .env, copied from .env.example)
 	docker compose up --build --detach --wait --wait-timeout 600

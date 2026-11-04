@@ -120,6 +120,9 @@ COMPOSE_FILE=compose.yaml:compose.prod.yaml docker compose cp \
 | `make smoke` | End-to-end tests against a running development mode |
 | `make prod-smoke` | End-to-end tests against a running production mode, through Caddy |
 | `make format` | Formats the code and applies safe lint fixes |
+| `make hooks` | Installs dependencies and enables the git hooks. Run it once per clone |
+
+The pre-commit hook runs Ruff on the staged Python files and mypy on the project. If Ruff changes a file, the commit stops so you can review and stage the fix. The hook does not run tests, and CI still runs every check.
 
 Tests check behaviour through the HTTP contract of the API and of the running stack. The end-to-end tests also run the trivial DAG through Airflow's API, and back up, restore and confirm data.
 
