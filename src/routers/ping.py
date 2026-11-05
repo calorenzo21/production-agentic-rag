@@ -9,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("/ping", tags=["Health"])
-async def ping():
+async def ping() -> dict[str, str]:
     """Simple ping endpoint for basic connectivity tests."""
     return {"status": "ok", "message": "pong"}
 
@@ -56,7 +56,7 @@ async def health_check(settings: SettingsDep, database: DatabaseDep) -> HealthRe
             session.execute(text("SELECT 1"))
             services["database"] = ServiceStatus(status="healthy", message="Connected successfully")
     except Exception as e:
-        services["database"] = ServiceStatus(status="unhealthy", message=f"Connection failed: {str(e)}")
+        services["database"] = ServiceStatus(status="unhealthy", message=f"Connection failed: {e!s}")
         overall_status = "degraded"
 
     # Test Ollama service connectivity
@@ -67,7 +67,7 @@ async def health_check(settings: SettingsDep, database: DatabaseDep) -> HealthRe
         if ollama_health["status"] != "healthy":
             overall_status = "degraded"
     except Exception as e:
-        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama check failed: {str(e)}")
+        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama check failed: {e!s}")
         overall_status = "degraded"
 
     return HealthResponse(

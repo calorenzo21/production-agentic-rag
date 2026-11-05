@@ -14,4 +14,4 @@ The accepted Deviations are native Ollama, so that inference can use the GPU, pl
 
 ## Consequences
 
-The repository no longer claims to be production-ready. Code taken from later Weeks of the course will not work unchanged where a Deviation touches it: from Week 3, the course's OpenSearch client needs TLS and authentication, and new tables need a migration instead of `create_all`.
+The repository no longer claims to be production-ready. Code taken from later Weeks of the course will not work unchanged where a Deviation touches it: from Week 3, the course's OpenSearch client needs TLS and authentication, and new tables need a migration instead of `create_all`. ADR 0003 later moves Airflow to version 3.

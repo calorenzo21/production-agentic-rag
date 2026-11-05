@@ -27,7 +27,7 @@ health: ## Check all services health
 	@set -a; . ./.env; set +a; \
 	(curl -fsS http://localhost:8000/api/v1/health || echo '"API not responding"') | jq .; \
 	(curl -fsS --cacert secrets/opensearch/ca.crt --user "rag_app:$$OPENSEARCH_APP_PASSWORD" https://localhost:9200/_cluster/health || echo '"OpenSearch not responding"') | jq .; \
-	(curl -fsS http://localhost:8080/health || echo '"Airflow not responding"') | jq .; \
+	(curl -fsS http://localhost:8080/api/v2/monitor/health || echo '"Airflow not responding"') | jq .; \
 	(curl -fsS http://localhost:11434/api/version || echo '"Ollama not responding"') | jq .
 
 # Development

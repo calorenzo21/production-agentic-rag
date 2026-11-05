@@ -1,5 +1,3 @@
-from typing import List
-
 from pydantic import BaseModel, Field
 
 
@@ -14,7 +12,7 @@ class PaperSource(BaseModel):
 
     arxiv_id: str = Field(..., description="arXiv paper ID")
     title: str = Field(..., description="Paper title")
-    authors: List[str] = Field(..., description="List of paper authors")
+    authors: list[str] = Field(..., description="List of paper authors")
     abstract_preview: str = Field(..., description="Preview of paper abstract")
 
 
@@ -22,4 +20,4 @@ class AskResponse(BaseModel):
     """Response schema for question answering endpoints."""
 
     answer: str = Field(..., description="Answer to the question")
-    sources: List[PaperSource] = Field(..., description="Source papers used for the answer")
+    sources: list[PaperSource] = Field(..., description="Source papers used for the answer")

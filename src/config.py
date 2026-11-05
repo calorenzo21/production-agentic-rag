@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,13 +35,13 @@ class Settings(DefaultSettings):
 
     # Ollama configuration
     ollama_host: str = "http://localhost:11434"
-    ollama_models: Union[str, List[str]] = Field(default=["gpt-oss:20b", "llama3.2:1b"])
+    ollama_models: str | list[str] = Field(default=["gpt-oss:20b", "llama3.2:1b"])
     ollama_default_model: str = "llama3.2:1b"
     ollama_timeout: int = 300  # 5 minutes for large model operations
 
     @field_validator("ollama_models", mode="before")
     @classmethod
-    def parse_ollama_models(cls, v):
+    def parse_ollama_models(cls, v: Any) -> Any:
         """Parse comma-separated string into list of models."""
         if isinstance(v, str):
             return [model.strip() for model in v.split(",") if model.strip()]

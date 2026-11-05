@@ -1,5 +1,6 @@
+from collections.abc import Generator
 from functools import lru_cache
-from typing import Annotated, Generator
+from typing import Annotated
 
 from fastapi import Depends, Request
 
@@ -19,12 +20,14 @@ def get_settings() -> Settings:
 
 def get_request_settings(request: Request) -> Settings:
     """Get settings from the request state."""
-    return request.app.state.settings
+    settings: Settings = request.app.state.settings
+    return settings
 
 
 def get_database(request: Request) -> BaseDatabase:
     """Get database from the request state."""
-    return request.app.state.database
+    database: BaseDatabase = request.app.state.database
+    return database
 
 
 def get_db_session(database: Annotated[BaseDatabase, Depends(get_database)]) -> Generator[Session, None, None]:
@@ -34,19 +37,19 @@ def get_db_session(database: Annotated[BaseDatabase, Depends(get_database)]) -> 
 
 
 # Week 2+: PDF parser service (not implemented in Week 1)
-def get_pdf_parser_service(request: Request):
+def get_pdf_parser_service(request: Request) -> None:
     """Get PDF parser service from app state (Week 2+ - not implemented yet)."""
     return None
 
 
 # Week 1: OpenSearch service (placeholder - full implementation in Week 3+)
-def get_opensearch_service(request: Request):
+def get_opensearch_service(request: Request) -> object | None:
     """Get OpenSearch service from app state (Week 3+ - placeholder for Week 1)."""
     return getattr(request.app.state, "opensearch_service", None)
 
 
 # Phase 3: LLM service (skeleton only)
-def get_llm_service(request: Request):
+def get_llm_service(request: Request) -> None:
     """Get LLM service from app state (Phase 3 - not implemented yet)."""
     # Phase 3: Will return actual LLM service
     return None

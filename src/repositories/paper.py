@@ -1,7 +1,5 @@
-from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 from src.models.paper import Paper
 from src.schemas.paper import PaperCreate
@@ -18,13 +16,13 @@ class PaperRepository:
         self.session.refresh(db_paper)
         return db_paper
 
-    def get_by_arxiv_id(self, arxiv_id: str) -> Optional[Paper]:
+    def get_by_arxiv_id(self, arxiv_id: str) -> Paper | None:
         return self.session.query(Paper).filter(Paper.arxiv_id == arxiv_id).first()
 
-    def get_by_id(self, paper_id: UUID) -> Optional[Paper]:
+    def get_by_id(self, paper_id: UUID) -> Paper | None:
         return self.session.query(Paper).filter(Paper.id == paper_id).first()
 
-    def get_all(self, limit: int = 100, offset: int = 0) -> List[Paper]:
+    def get_all(self, limit: int = 100, offset: int = 0) -> list[Paper]:
         return self.session.query(Paper).order_by(Paper.published_date.desc()).limit(limit).offset(offset).all()
 
     def update(self, paper: Paper) -> Paper:

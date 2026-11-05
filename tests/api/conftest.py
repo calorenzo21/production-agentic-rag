@@ -15,6 +15,8 @@ def anyio_backend() -> str:
 @pytest.fixture
 async def client():
     """HTTP client for API testing."""
-    async with LifespanManager(app) as manager:
-        async with AsyncClient(transport=ASGITransport(app=manager.app), base_url="http://test") as client:
-            yield client
+    async with (
+        LifespanManager(app) as manager,
+        AsyncClient(transport=ASGITransport(app=manager.app), base_url="http://test") as client,
+    ):
+        yield client
