@@ -5,9 +5,9 @@ from .paper import PaperCreate, PaperResponse, PaperSearchResponse
 __all__ = [
     "AskRequest",
     "AskResponse",
-    "PaperSource",
     "HealthResponse",
     "PaperCreate",
     "PaperResponse",
     "PaperSearchResponse",
+    "PaperSource",
 ]

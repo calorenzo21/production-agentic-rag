@@ -77,6 +77,8 @@ CI runs lint only.
 | Infrastructure tests | None | `make smoke` |
 | CI | None | Lint |
 | Commit hook | None | Rejects tool attribution in commit messages |
+| Ruff | Import order only | Also errors, bugs, simplifications and security rules |
+| mypy | Runs with `ignore_errors` | `strict`, in CI and in the pre-commit hook |
 
 ### Errors fixed
 

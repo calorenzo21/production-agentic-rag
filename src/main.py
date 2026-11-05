@@ -1,5 +1,6 @@
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Week 1: Simplified lifespan for learning purposes."""
     logger.info("Starting RAG API...")
 
@@ -60,4 +61,4 @@ app.include_router(ask.router)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, port=8000, host="0.0.0.0")
+    uvicorn.run(app, port=8000, host="0.0.0.0")  # noqa: S104

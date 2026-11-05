@@ -1,5 +1,4 @@
 import logging
-from typing import Dict
 
 import httpx
 from src.config import Settings
@@ -13,7 +12,7 @@ class OllamaClient:
     def __init__(self, settings: Settings):
         self.base_url = settings.ollama_host
 
-    async def health_check(self) -> Dict[str, str]:
+    async def health_check(self) -> dict[str, str]:
         """Check if Ollama service is available."""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:

@@ -1,6 +1,6 @@
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +23,7 @@ class PostgreSQLSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="POSTGRES_")
 
 
+# Airflow imports this module with SQLAlchemy 1.4, which has no DeclarativeBase class.
 Base = declarative_base()
 
 
@@ -31,16 +32,15 @@ class PostgreSQLDatabase(BaseDatabase):
 
     def __init__(self, config: PostgreSQLSettings):
         self.config = config
-        self.engine: Optional[Engine] = None
-        self.session_factory: Optional[sessionmaker] = None
+        self.engine: Engine | None = None
+        self.session_factory: sessionmaker[Session] | None = None
 
     def startup(self) -> None:
         """Initialize the database connection."""
         try:
             # Log connection attempt
-            logger.info(
-                f"Attempting to connect to PostgreSQL at: {self.config.database_url.split('@')[1] if '@' in self.config.database_url else 'localhost'}"
-            )
+            host = self.config.database_url.split("@")[-1]
+            logger.info(f"Attempting to connect to PostgreSQL at: {host}")
 
             self.engine = create_engine(
                 self.config.database_url,
@@ -53,7 +53,6 @@ class PostgreSQLDatabase(BaseDatabase):
             self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
 
             # Test the connection
-            assert self.engine is not None
             with self.engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
                 logger.info("Database connection test successful")
