@@ -34,8 +34,6 @@ The first build takes several minutes, and the Airflow image is about 11 GB beca
 | PostgreSQL | localhost:5432 | `rag_user`, `RAG_DB_PASSWORD` in `.env` |
 | Ollama (native) | http://localhost:11434 | None |
 
-`notebooks/week1/` walks through every service. Start it with `uv run jupyter notebook`.
-
 ## Commands
 
 | Command | What it does |
@@ -75,6 +73,7 @@ CI runs lint only.
 
 | Topic | Course | This repository |
 |---|---|---|
+| Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
 | Infrastructure tests | None | `make smoke` |
 | CI | None | Lint |
 | Commit hook | None | Rejects tool attribution in commit messages |
@@ -96,7 +95,6 @@ CI runs lint only.
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
-| `notebooks/week1/` | Calls `/health` on the API, and `make ollama-*` targets that do not exist | Real routes and commands |
 
 ## Licence
 
