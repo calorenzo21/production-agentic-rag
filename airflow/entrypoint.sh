@@ -2,8 +2,7 @@
 set -e
 
 # Remove PID files left by a previous run of this container
-rm -f /opt/airflow/airflow-webserver.pid
-rm -f /opt/airflow/airflow-scheduler.pid
+rm -f /opt/airflow/airflow-*.pid
 
 # Initialize Airflow database
 echo "Initializing Airflow database..."
@@ -19,7 +18,9 @@ airflow users create \
     --email admin@example.com \
     --password "$AIRFLOW_ADMIN_PASSWORD" || echo "Admin user already exists"
 
-# Start webserver and scheduler
-echo "Starting Airflow webserver and scheduler..."
-airflow webserver --port 8080 --daemon &
-airflow scheduler
+# Start the API server, the scheduler and the DAG processor. The container stops if any of them does.
+echo "Starting Airflow API server, scheduler and DAG processor..."
+airflow api-server --port 8080 &
+airflow scheduler &
+airflow dag-processor &
+wait -n

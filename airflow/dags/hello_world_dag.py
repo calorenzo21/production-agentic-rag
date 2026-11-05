@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 
 import psycopg2
 import requests
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import DAG
 
 
 def hello_world():
@@ -53,7 +53,7 @@ dag = DAG(
     "hello_world_week1",
     default_args=default_args,
     description="Hello World DAG for Week 1",
-    schedule=None,  # Manual trigger only (schedule parameter introduced in Airflow 2.4+)
+    schedule=None,  # Manual trigger only
     catchup=False,
     tags=["week1", "testing"],
 )

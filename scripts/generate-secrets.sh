@@ -25,6 +25,15 @@ if [ ! -f .env ]; then
     echo "Generated .env"
 fi
 
+# Adds the secrets that .env.example gained after this .env was generated.
+while IFS= read -r line; do
+    case "$line" in
+    *"=$PLACEHOLDER")
+        grep -q "^${line%%=*}=" .env || echo "${line%%=*}=$(password)" >>.env
+        ;;
+    esac
+done <.env.example
+
 # shellcheck disable=SC1091
 . ./.env
 

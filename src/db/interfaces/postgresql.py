@@ -6,7 +6,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from src.db.interfaces.base import BaseDatabase
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ class PostgreSQLSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="POSTGRES_")
 
 
-# Airflow imports this module with SQLAlchemy 1.4, which has no DeclarativeBase class.
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 
 class PostgreSQLDatabase(BaseDatabase):

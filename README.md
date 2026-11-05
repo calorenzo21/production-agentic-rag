@@ -23,7 +23,7 @@ ollama serve # Skip this if the Ollama app is already running
 make start
 ```
 
-The first build takes several minutes, and the Airflow image is about 11 GB because the course installs Docling in it. `make status` shows when the services are healthy.
+The first build takes several minutes, and the Airflow image is about 3.5 GB because the course installs Docling in it. `make status` shows when the services are healthy.
 
 | Service | Address | Login |
 |---|---|---|
@@ -62,7 +62,9 @@ CI runs lint only.
 | Airflow login | `admin/admin` | `admin` with a generated password |
 | Airflow configuration | Visible in its web interface | Hidden |
 | Airflow metadata | Shared with the application in `rag_db` | Its own database and user. DAGs still reach `rag_db`, as ingestion needs it |
-| Airflow encryption keys | Not set | Generated Fernet and webserver secret keys |
+| Airflow encryption keys | Not set | Generated Fernet, API secret and JWT keys |
+| Airflow version | 2.10.3, with SQLAlchemy 1.4 | 3.3.2, with the same SQLAlchemy version as the application ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
+| Airflow's torch | The default build, with NVIDIA libraries | The CPU build, as the containers have no GPU |
 | Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
 | OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
 | OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |

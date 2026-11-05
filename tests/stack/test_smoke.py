@@ -109,6 +109,14 @@ def test_airflow_tasks_can_use_the_application_database_code() -> None:
     assert attempt.returncode == 0, attempt.stderr
 
 
+def test_airflow_and_the_api_share_the_sqlalchemy_version() -> None:
+    code = "import sqlalchemy; print(sqlalchemy.__version__)"
+
+    versions = {service: compose("exec", "-T", service, "python", "-c", code).stdout.strip() for service in ("airflow", "api")}
+
+    assert versions["airflow"] == versions["api"], versions
+
+
 def test_the_week_1_dag_runs() -> None:
     run = compose("exec", "-T", "airflow", "airflow", "dags", "test", "hello_world_week1", check=False)
 
@@ -117,9 +125,11 @@ def test_the_week_1_dag_runs() -> None:
 
 def airflow_login(password: str) -> str:
     with httpx.Client(base_url="http://localhost:8080") as airflow:
-        csrf_token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', airflow.get("/login/").text)
+        csrf_token = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', airflow.get("/auth/login/").text)
         assert csrf_token, "the login form has no CSRF token"
-        response = airflow.post("/login/", data={"username": "admin", "password": password, "csrf_token": csrf_token.group(1)})
+        response = airflow.post(
+            "/auth/login/", data={"username": "admin", "password": password, "csrf_token": csrf_token.group(1)}
+        )
     return response.headers["location"]
 
 
@@ -129,7 +139,7 @@ def test_airflow_rejects_admin_admin_and_accepts_the_generated_password() -> Non
 
 
 def test_airflow_hides_its_configuration() -> None:
-    value = compose("exec", "-T", "airflow", "airflow", "config", "get-value", "webserver", "expose_config")
+    value = compose("exec", "-T", "airflow", "airflow", "config", "get-value", "api", "expose_config")
 
     assert value.stdout.strip().lower() == "false"
 
