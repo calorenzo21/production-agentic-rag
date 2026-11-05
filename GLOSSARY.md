@@ -12,14 +12,10 @@ _Avoid_: Document, article
 An arXiv subject classification that decides which Papers the curator collects, such as `cs.AI`.
 _Avoid_: Topic, subject, tag
 
-**Infrastructure foundation**:
-The first project milestone: the running platform that later capabilities are built on.
-_Avoid_: Week 1, setup
+**Week**:
+A stage of the reference course, identified by its tag.
+_Avoid_: Milestone, phase, sprint
 
-**Development mode**:
-The way of running the curator that is optimised for changing and debugging it.
-_Avoid_: Local mode, dev environment
-
-**Production mode**:
-The way of running the curator hardened as it would be for real use, whichever machine it runs on.
-_Avoid_: Deployed, live, prod environment
+**Deviation**:
+A deliberate, recorded difference from the reference course.
+_Avoid_: Customisation, divergence, fork

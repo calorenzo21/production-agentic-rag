@@ -1,18 +1,43 @@
-FROM python:3.13.18-slim-trixie AS build
-COPY --from=ghcr.io/astral-sh/uv:0.11.23 /uv /usr/local/bin/uv
-ENV UV_PYTHON_DOWNLOADS=never UV_PROJECT_ENVIRONMENT=/app/.venv
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm AS base
+
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
+
+# Copy configuration files
+COPY pyproject.toml uv.lock ./
+
+# UV_COMPILE_BYTECODE for generating .pyc files -> faster application startup.
+# UV_LINK_MODE=copy to silence warnings about not being able to use hard links
+# since the cache and sync target are on separate file systems.
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Install dependencies
 RUN uv sync --frozen --no-dev
 
-FROM python:3.13.18-slim-trixie
-RUN useradd --uid 1000 --no-create-home curator
-WORKDIR /app
-COPY --from=build /app ./
-COPY alembic.ini ./
-COPY migrations ./migrations
-ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
-USER curator
+# Copy source code and migrations
+COPY src /app/src
+COPY alembic.ini /app/alembic.ini
+COPY migrations /app/migrations
+
+FROM python:3.12.8-slim AS final
+
 EXPOSE 8000
-CMD ["uvicorn", "--factory", "paper_curator.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+
+# PYTHONUNBUFFERED=1 to disable output buffering
+ENV PYTHONUNBUFFERED=1
+ARG VERSION=0.1.0
+ENV APP_VERSION=$VERSION
+
+WORKDIR /app
+
+# Copy the virtual environment from the base stage
+COPY --from=base /app /app
+
+# Add virtual environment to PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Run as an unprivileged user
+RUN useradd --system --uid 10001 --no-create-home rag
+USER rag
+
+# Run the application
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

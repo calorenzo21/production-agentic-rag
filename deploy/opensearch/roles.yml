@@ -1,0 +1,16 @@
+_meta:
+  type: roles
+  config_version: 2
+
+# The application and its DAGs: full control of the project's indices, nothing else.
+rag_app:
+  cluster_permissions:
+    - cluster_monitor
+    - cluster_composite_ops
+    - cluster:admin/ingest/pipeline/*
+    - cluster:admin/search/pipeline/*
+  index_permissions:
+    - index_patterns:
+        - arxiv-papers*
+      allowed_actions:
+        - indices_all

@@ -1,0 +1,195 @@
+# Based on the course's Week 1 compose.yml. README.md lists every Deviation.
+
+# Settings the API and Airflow share. Each container only receives the secrets it uses.
+x-app-environment: &app-environment
+  APP_VERSION: ${APP_VERSION:-0.1.0}
+  DEBUG: ${DEBUG:-false}
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  SERVICE_NAME: ${SERVICE_NAME:-rag-api}
+  POSTGRES_DATABASE_URL: postgresql://rag_user:${RAG_DB_PASSWORD:?run make setup}@postgres:5432/rag_db
+  POSTGRES_ECHO_SQL: ${POSTGRES_ECHO_SQL:-false}
+  POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE:-20}
+  POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW:-0}
+  OPENSEARCH_HOST: https://opensearch:9200
+  OPENSEARCH_USERNAME: rag_app
+  OPENSEARCH_PASSWORD: ${OPENSEARCH_APP_PASSWORD:?run make setup}
+  OPENSEARCH_CA_CERTS: /certs/opensearch-ca.crt
+  # Ollama runs natively on the host so that it can use the GPU.
+  OLLAMA_HOST: http://host.docker.internal:11434
+  OLLAMA_MODELS: ${OLLAMA_MODELS:-llama3.2:1b,gpt-oss:20b}
+  OLLAMA_DEFAULT_MODEL: ${OLLAMA_DEFAULT_MODEL:-llama3.2:1b}
+  OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-300}
+
+services:
+  # Applies Alembic migrations, then exits. The API and Airflow wait for it.
+  migrate:
+    build: .
+    image: rag-api:local
+    container_name: rag-migrate
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DATABASE_URL: postgresql://rag_user:${RAG_DB_PASSWORD:?run make setup}@postgres:5432/rag_db
+    networks:
+      - rag-network
+
+  # API service
+  api:
+    build: .
+    image: rag-api:local
+    container_name: rag-api
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    environment:
+      <<: *app-environment
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./secrets/opensearch/ca.crt:/certs/opensearch-ca.crt:ro
+    networks:
+      - rag-network
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    container_name: rag-opensearch
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_APP_PASSWORD=${OPENSEARCH_APP_PASSWORD:?run make setup}
+    ports:
+      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:9600:9600"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+      - ./deploy/opensearch/opensearch.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - ./deploy/opensearch/roles.yml:/usr/share/opensearch/config/opensearch-security/roles.yml:ro
+      - ./secrets/opensearch/internal_users.yml:/usr/share/opensearch/config/opensearch-security/internal_users.yml:ro
+      - ./secrets/opensearch/ca.crt:/usr/share/opensearch/config/certs/ca.crt:ro
+      - ./secrets/opensearch/node.crt:/usr/share/opensearch/config/certs/node.crt:ro
+      - ./secrets/opensearch/node.key:/usr/share/opensearch/config/certs/node.key:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --cacert config/certs/ca.crt --user \"rag_app:$$OPENSEARCH_APP_PASSWORD\" https://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.0
+    container_name: rag-dashboards
+    ports:
+      - "127.0.0.1:5601:5601"
+    environment:
+      - OPENSEARCH_DASHBOARDS_PASSWORD=${OPENSEARCH_DASHBOARDS_PASSWORD:?run make setup}
+      - OPENSEARCH_DASHBOARDS_COOKIE_PASSWORD=${OPENSEARCH_DASHBOARDS_COOKIE_PASSWORD:?run make setup}
+    volumes:
+      - ./deploy/opensearch/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./secrets/opensearch/ca.crt:/usr/share/opensearch-dashboards/config/opensearch-ca.crt:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/app/login || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - rag-network
+
+  airflow:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: rag-airflow
+    # user: "50000:0"  # Uncomment for WSL/Ubuntu, comment out for Mac
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opensearch:
+        condition: service_healthy
+    environment:
+      <<: *app-environment
+      AIRFLOW_HOME: /opt/airflow
+      # The DAGs import the application as `src.*`, so its parent directory is on the path.
+      PYTHONPATH: /opt/airflow
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?run make setup}
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?run make setup}
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?run make setup}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?run make setup}@postgres:5432/airflow
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - ./src:/opt/airflow/src
+      - ./secrets/opensearch/ca.crt:/certs/opensearch-ca.crt:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Command handled by entrypoint.sh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - rag-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag-postgres
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_SUPERUSER_PASSWORD:?run make setup}
+      - RAG_DB_PASSWORD=${RAG_DB_PASSWORD:?run make setup}
+      - AIRFLOW_DB_PASSWORD=${AIRFLOW_DB_PASSWORD:?run make setup}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    healthcheck:
+      # TCP on purpose: the temporary server used during first-time setup only listens on a socket.
+      test: ["CMD-SHELL", "pg_isready --host=127.0.0.1 --username=postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+volumes:
+  postgres_data:
+  opensearch_data:
+  airflow_logs:
+
+networks:
+  rag-network:
+    driver: bridge

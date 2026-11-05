@@ -1,17 +1,18 @@
 server.host: 0.0.0.0
-server.name: paper-curator
+server.name: rag-dashboards
 
 opensearch.hosts:
   - https://opensearch:9200
 opensearch.ssl.verificationMode: full
 opensearch.ssl.certificateAuthorities:
-  - /run/secrets/opensearch_ca
+  - /usr/share/opensearch-dashboards/config/opensearch-ca.crt
 opensearch.username: kibanaserver
 opensearch.password: ${OPENSEARCH_DASHBOARDS_PASSWORD}
 opensearch.requestHeadersAllowlist:
   - authorization
   - securitytenant
 
-opensearch_security.cookie.secure: true
+# Dashboards is served over plain HTTP on 127.0.0.1, so a secure-only cookie would never be sent.
+opensearch_security.cookie.secure: false
 opensearch_security.cookie.password: ${OPENSEARCH_DASHBOARDS_COOKIE_PASSWORD}
 opensearch_security.multitenancy.enabled: false
