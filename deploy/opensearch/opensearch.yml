@@ -1,4 +1,4 @@
-cluster.name: paper-curator
+cluster.name: rag-opensearch
 network.host: 0.0.0.0
 
 plugins.security.ssl.transport.pemcert_filepath: certs/node.crt
@@ -9,7 +9,8 @@ plugins.security.ssl.http.pemcert_filepath: certs/node.crt
 plugins.security.ssl.http.pemkey_filepath: certs/node.key
 plugins.security.ssl.http.pemtrustedcas_filepath: certs/ca.crt
 
-# Creates the security index from the mounted internal_users.yml on first start.
+# Creates the security index from the mounted internal_users.yml and roles.yml on first start.
+# Changing either file later means removing the opensearch_data volume, or running securityadmin.
 plugins.security.allow_default_init_securityindex: true
 plugins.security.nodes_dn:
   - CN=opensearch

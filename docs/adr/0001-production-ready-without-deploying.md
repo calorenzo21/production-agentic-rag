@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0002
+---
+
 # Production-ready, deliberately not deployed
 
 This project exists to prove the ability to build production-grade systems, and it has no budget for hosting, so it runs only on a local machine. Production mode is still a hardened stack that really runs and is tested, because configuration that has never run proves nothing. Its deployment target is any Linux server with Docker, documented in a runbook.

@@ -2,150 +2,102 @@
 
 A research assistant that collects academic papers from arXiv and answers research questions about them. See [GLOSSARY.md](GLOSSARY.md) for the project's language.
 
-This repository currently holds the **infrastructure foundation**: the running platform that later capabilities, starting with Paper ingestion, are built on. It exposes health endpoints only.
+This repository follows the [Production Agentic RAG course](https://github.com/jamwithai/production-agentic-rag-course) Week by Week, and its structure stays faithful to the course except for the Deviations listed below ([ADR 0002](docs/adr/0002-follow-the-course-with-recorded-deviations.md)). The course's own README explains each Week.
 
-## What "production-ready" means here
-
-Production mode is a hardened stack that really runs and is tested by automation. It has never been deployed and has never served real traffic, because the project has no hosting budget and no users ([ADR 0001](docs/adr/0001-production-ready-without-deploying.md)). So the claim is **production-ready, not production-proven**. The [runbook](docs/runbook.md) lists the remaining work, and which of its steps are untested.
-
-Known limits:
-
-- Nothing has run under load, or on more than one node.
-- PostgreSQL and OpenSearch are single instances, so there is no high availability.
-- The API has no authentication or rate limiting yet. They arrive with its first endpoint other than health.
-- Logs are JSON once services are running. First-start output, JVM warnings and the Airflow scheduler's health check access lines are still plain text.
-- The internal OpenSearch certificates live for about two years and do not renew themselves.
-- Docker restarts a service that exits, not one that hangs. A hung service shows as `unhealthy` until someone restarts it.
-- OpenSearch Dashboards cannot read its password from a file, so a small entrypoint puts it in that process's environment. It stays out of `docker inspect`, but not out of the container itself.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    client([Client]) -->|HTTPS| caddy[Caddy]
-    caddy --> api[FastAPI]
-    caddy --> airflow[Airflow API server]
-    caddy --> dashboards[OpenSearch Dashboards]
-    api --> postgres[(PostgreSQL)]
-    api --> opensearch[(OpenSearch)]
-    api -->|configured URL| ollama[Ollama, outside Compose]
-    dashboards --> opensearch
-    airflow --> postgres
-    scheduler[Airflow scheduler, DAG processor, triggerer] --> postgres
-```
-
-- **PostgreSQL** is the source of truth and the only data store with backups. The application and Airflow each have their own database and user, and neither can connect to the other's database.
-- **OpenSearch** indexes are rebuildable. From Paper ingestion onward, everything indexed must be recoverable from PostgreSQL or arXiv.
-- **Ollama** runs natively on the host in every mode, so inference uses the Apple GPU. The API only knows it through `OLLAMA__URL`.
-- **Alembic** owns the schema. Migrations run as a separate step before the API starts.
-- **Airflow** uses `LocalExecutor`, with each component in its own service.
-
-The code is the `paper_curator` package in `src/`, organised by capability.
-
-### Health contract
-
-| Endpoint | Situation | HTTP status | Body status |
-|---|---|---|---|
-| `GET /api/v1/health/live` | API process responding | 200 | `ok` |
-| `GET /api/v1/health` | All dependencies up | 200 | `ok` |
-| `GET /api/v1/health` | Only Ollama down | 200 | `degraded` |
-| `GET /api/v1/health` | PostgreSQL or OpenSearch down | 503 | `unhealthy` |
-
-Responses contain status names only, with no versions or hostnames.
-
-## The two modes
-
-`compose.yaml` defines development mode, and `compose.prod.yaml` holds every difference from it.
-
-| | Development mode | Production mode |
-|---|---|---|
-| Entry point | Each service on a loopback port | Caddy with HTTPS on ports 80 and 443 |
-| Credentials | Throwaway values in `.env` | Generated files, passed as Compose secrets |
-| OpenSearch | No security | TLS and authentication |
-| API | Hot reload | Read-only filesystem, JSON logs |
-| Containers | Image defaults | Non-root, resource limits, restart policies |
-
-Each mode has its own Compose project, so they do not share data.
+**Current Week: 1, Infrastructure.** The API's `/ask` endpoint returns mock data, as it does in the course at this Week.
 
 ## Setup on a Mac
 
 ```sh
-brew install colima docker docker-compose uv ollama
+brew install colima docker docker-compose uv ollama jq
 mkdir -p ~/.docker/cli-plugins
 ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose
 colima start --cpu 6 --memory 12
 ```
 
-## Run development mode
+## Run
 
 ```sh
-cp .env.example .env
-docker compose up
+make setup   # Installs dependencies and hooks, and generates .env and secrets/ (Docker must be running)
+ollama serve # Skip this if the Ollama app is already running
+make start
 ```
+
+The first build takes several minutes, and the Airflow image is about 11 GB because the course installs Docling in it. `make status` shows when the services are healthy.
 
 | Service | Address | Login |
 |---|---|---|
-| API | http://127.0.0.1:8000/api/v1/health | None |
-| Airflow | http://127.0.0.1:8080 | `admin`, password in `.env` |
-| OpenSearch | http://127.0.0.1:9200 | None |
-| OpenSearch Dashboards | http://127.0.0.1:5601 | None |
-| PostgreSQL | 127.0.0.1:5432 | Passwords in `.env` |
+| API | http://localhost:8000/docs | None |
+| Airflow | http://localhost:8080 | `admin`, `AIRFLOW_ADMIN_PASSWORD` in `.env` |
+| OpenSearch | https://localhost:9200 | `rag_app`, `OPENSEARCH_APP_PASSWORD` in `.env`, CA in `secrets/opensearch/ca.crt` |
+| OpenSearch Dashboards | http://localhost:5601 | `admin`, `OPENSEARCH_ADMIN_PASSWORD` in `.env` |
+| PostgreSQL | localhost:5432 | `rag_user`, `RAG_DB_PASSWORD` in `.env` |
+| Ollama (native) | http://localhost:11434 | None |
 
-## Run production mode
+`notebooks/week1/` walks through every service. Start it with `uv run jupyter notebook`.
 
-```sh
-make prod
-```
-
-This generates any missing secret in `secrets/`, which git ignores, and starts the stack.
-
-| Service | Address | Login |
-|---|---|---|
-| API | https://localhost/api/v1/health | None |
-| Airflow | https://airflow.localhost | `admin`, password in `secrets/airflow_admin_password` |
-| OpenSearch Dashboards | https://opensearch.localhost | `admin`, password in `secrets/opensearch_admin_password` |
-
-Certificates come from Caddy's internal certificate authority, so browsers warn about them unless you trust its root. To get a copy of the root:
-
-```sh
-COMPOSE_FILE=compose.yaml:compose.prod.yaml docker compose cp \
-  caddy:/data/caddy/pki/authorities/local/root.crt .
-```
-
-## Tests and checks
+## Commands
 
 | Command | What it does |
 |---|---|
-| `make check` | Formatting, lint, types, and the tests that need no running stack |
-| `make smoke` | End-to-end tests against a running development mode |
-| `make prod-smoke` | End-to-end tests against a running production mode, through Caddy |
-| `make format` | Formats the code and applies safe lint fixes |
-| `make hooks` | Installs dependencies and enables the git hooks. Run it once per clone |
+| `make start`, `stop`, `restart`, `status`, `logs` | Manage the services |
+| `make health` | Asks every service for its health |
+| `make lint`, `format` | Ruff and mypy, with the course's configuration |
+| `make test`, `test-cov` | Tests that need no running stack. Week 1 has none yet, so pytest reports that no tests ran |
+| `make smoke` | Checks a running stack, including every security Deviation |
+| `make clean` | Removes this project's containers and volumes |
 
-The pre-commit hook runs Ruff on the staged Python files and mypy on the project. If Ruff changes a file, the commit stops so you can review and stage the fix. The hook does not run tests, and CI still runs every check.
+CI runs lint only.
 
-Tests check behaviour through the HTTP contract of the API and of the running stack. The end-to-end tests also run the trivial DAG through Airflow's API, and back up, restore and confirm data.
+## Deviations
 
-CI runs the checks, a secret scan, the `amd64` image builds and both smoke tests on every PR. It uses a fake Ollama (`tests/fake_ollama.py`), so a real model is only exercised on a Mac.
+### Architecture and security
 
-## Backups
+| Topic | Course | This repository |
+|---|---|---|
+| Ollama | A Compose service, which has no GPU on a Mac | Native on the host, reached through `host.docker.internal` |
+| Published ports | All network interfaces | `127.0.0.1` only |
+| Passwords | Fixed values, written in Compose and in code | Random values in `.env`, generated by `make setup` |
+| Service secrets | `.env` passed whole to each container | Each container receives only what it uses |
+| PostgreSQL users | The application owns the server as its superuser | A separate superuser, and `rag_user` owns only `rag_db` |
+| PostgreSQL authentication | `password`, which sends it in clear text | The image's default, `scram-sha-256` |
+| Airflow login | `admin/admin` | `admin` with a generated password |
+| Airflow configuration | Visible in its web interface | Hidden |
+| Airflow metadata | Shared with the application in `rag_db` | Its own database and user. DAGs still reach `rag_db`, as ingestion needs it |
+| Airflow encryption keys | Not set | Generated Fernet and webserver secret keys |
+| Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
+| OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
+| OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |
+| API container | Runs as `root` | Runs as an unprivileged user |
+| Docker build context | Everything, including `.env` | Only what the image needs (`.dockerignore`) |
 
-```sh
-make prod-backup                                # Writes to backups/<timestamp>/
-make prod-restore BACKUP=backups/<timestamp>    # Stops writers, restores, starts them again
-```
+### Tooling
 
-`make backup` and `make restore` do the same for development mode.
+| Topic | Course | This repository |
+|---|---|---|
+| Infrastructure tests | None | `make smoke` |
+| CI | None | Lint |
+| Commit hook | None | Rejects tool attribution in commit messages |
 
-## Findings from building this
+### Errors fixed
 
-- Containers reach an Ollama that listens only on `127.0.0.1` through `host.docker.internal` under Colima, so Ollama needs no exposure to the network. On Linux it does not work this way, and the runbook covers it.
-- Colima's 12 GB is enough. Production mode uses about 3 GB when idle.
-- A standard GitHub Actions runner can build and test both modes, in about 7 minutes.
-- Compose versions treat `!reset` differently when it is reached through a YAML alias, so `compose.prod.yaml` writes it directly under each service. It is tested on Compose 2.38.2 and 5.7.0.
-- OpenSearch needed no memory changes under Colima beyond a 1 GB heap.
-- PostgreSQL 18 is the newest stable major. PostgreSQL 19 is still a release candidate.
+| File | Error in the course | Fix |
+|---|---|---|
+| `Makefile` | `make health` calls routes that do not exist | Calls the real routes, and reports a service that is down |
+| `Makefile` | `make clean` prunes Docker for every project on the machine | Removes this project's containers and volumes only |
+| `Dockerfile` | Needs BuildKit for `--mount` options it does not need, so it fails to build on Colima's default builder | Options removed |
+| `compose.yml` | Mounts `airflow/plugins`, which is not in the repository | Mount removed |
+| `compose.yml` | `PYTHONPATH` makes `src.*` impossible to import from a DAG | Points to the parent of `src` |
+| `compose.yml` | The PostgreSQL health check passes during first-time setup, before the server is really up | Checks over TCP |
+| `compose.yml` | The Dashboards health check needs a login once security is on | Checks the login page |
+| `airflow/init-db.sql` | Invalid SQL for PostgreSQL, and nothing uses it | Removed |
+| `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
+| `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
+| `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
+| `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
+| `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
+| `notebooks/week1/` | Calls `/health` on the API, and `make ollama-*` targets that do not exist | Real routes and commands |
 
 ## Licence
 
-[MIT](LICENSE)
+[MIT](LICENSE). This repository includes code from the course, whose copyright notice is kept in the same file.

@@ -1,49 +1,80 @@
 #!/bin/sh
-# Creates every missing production secret in secrets/ and leaves existing ones untouched.
+# Creates .env and the OpenSearch files in secrets/ when they are missing. Existing ones stay.
 #
-# The directory is private to the current user. The files inside are world-readable because
-# containers bind-mount them directly and run as different users, so the directory protects them.
+# secrets/ is private to the current user. The files inside are world-readable because containers
+# bind-mount them directly and run as different users, so the directory protects them.
 set -eu
 
 cd "$(dirname "$0")/.."
-CADDY_IMAGE=caddy:2.11.7
+OPENSEARCH_IMAGE=opensearchproject/opensearch:2.19.0
+PLACEHOLDER=generated-by-make-setup
 
-mkdir -p secrets
+password() { openssl rand -hex 24; }
+fernet_key() { openssl rand -base64 32 | tr '+/' '-_'; }
+
+if [ ! -f .env ]; then
+    while IFS= read -r line; do
+        case "$line" in
+        AIRFLOW_FERNET_KEY="$PLACEHOLDER") echo "AIRFLOW_FERNET_KEY=$(fernet_key)" ;;
+        *"=$PLACEHOLDER") echo "${line%%=*}=$(password)" ;;
+        *) echo "$line" ;;
+        esac
+    done <.env.example >.env.partial
+    chmod 600 .env.partial
+    mv .env.partial .env
+    echo "Generated .env"
+fi
+
+# shellcheck disable=SC1091
+. ./.env
+
+mkdir -p secrets/opensearch
 chmod 700 secrets
-cd secrets
+cd secrets/opensearch
 
-generate() { # name command...
-    name="$1"
-    shift
-    if [ ! -f "$name" ]; then
-        rm -f "$name.partial"
-        "$@" >"$name.partial"
-        chmod 444 "$name.partial"
-        mv "$name.partial" "$name"
-        echo "Generated secrets/$name"
-    fi
+if [ ! -f ca.key ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=rag-opensearch-ca" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -keyout ca.key -out ca.crt 2>/dev/null
+    chmod 400 ca.key
+    chmod 444 ca.crt
+    rm -f node.crt node.key
+    echo "Generated secrets/opensearch/ca.crt"
+fi
+
+if [ ! -f node.crt ]; then
+    extensions="$(mktemp)"
+    cat >"$extensions" <<CONFIG
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth,clientAuth
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid
+subjectAltName=DNS:opensearch,DNS:localhost
+CONFIG
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=opensearch" -keyout node.raw.key \
+        -out node.csr 2>/dev/null
+    rm -f node.key
+    openssl pkcs8 -topk8 -nocrypt -in node.raw.key -out node.key
+    openssl x509 -req -in node.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 825 \
+        -extfile "$extensions" -out node.crt 2>/dev/null
+    rm -f "$extensions" node.raw.key node.csr ca.srl
+    chmod 444 node.key node.crt
+    echo "Generated secrets/opensearch/node.crt"
+fi
+
+# Uses the hashing tool of the OpenSearch image, so it needs Docker running.
+hash_password() {
+    PASSWORD_TO_HASH="$1" docker run --rm --env PASSWORD_TO_HASH "$OPENSEARCH_IMAGE" \
+        plugins/opensearch-security/tools/hash.sh -env PASSWORD_TO_HASH | tail -n 1
 }
 
-# No trailing newlines: Airflow's _CMD settings use a command's output as it is.
-password() { openssl rand -hex 24 | tr -d '\n'; }
-fernet_key() { openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n'; }
-long_secret() { openssl rand -hex 48 | tr -d '\n'; }
-
-bcrypt() { # plaintext file
-    output="$(printf '%s\n' "$(cat "$1")" | docker run --interactive --rm "$CADDY_IMAGE" \
-        caddy hash-password --algorithm bcrypt)" || return 1
-    printf '%s' "$output" | tail -n 1
-}
-
-airflow_database_url() {
-    printf 'postgresql+psycopg://airflow:%s@postgres:5432/airflow' "$(cat airflow_db_password)"
-}
-
-internal_users() {
-    admin_hash="$(bcrypt opensearch_admin_password)"
-    dashboards_hash="$(bcrypt opensearch_dashboards_password)"
-    curator_hash="$(bcrypt curator_opensearch_password)"
-    cat <<YAML
+if [ ! -f internal_users.yml ]; then
+    admin_hash="$(hash_password "$OPENSEARCH_ADMIN_PASSWORD")"
+    dashboards_hash="$(hash_password "$OPENSEARCH_DASHBOARDS_PASSWORD")"
+    app_hash="$(hash_password "$OPENSEARCH_APP_PASSWORD")"
+    cat >internal_users.partial <<YAML
 _meta:
   type: internalusers
   config_version: 2
@@ -55,51 +86,12 @@ admin:
 kibanaserver:
   hash: "$dashboards_hash"
   reserved: true
-curator:
-  hash: "$curator_hash"
+rag_app:
+  hash: "$app_hash"
   opendistro_security_roles:
-    - readall_and_monitor
+    - rag_app
 YAML
-}
-
-for name in postgres_superuser_password curator_db_password airflow_db_password airflow_admin_password \
-    opensearch_admin_password curator_opensearch_password opensearch_dashboards_password; do
-    generate "$name" password
-done
-generate airflow_fernet_key fernet_key
-generate airflow_jwt_secret long_secret
-generate airflow_api_secret_key long_secret
-generate opensearch_dashboards_cookie_password long_secret
-generate airflow_database_url airflow_database_url
-generate opensearch_internal_users.yml internal_users
-
-if [ ! -f opensearch_ca.key ]; then
-    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=paper-curator-opensearch-ca" \
-        -addext "basicConstraints=critical,CA:TRUE" \
-        -addext "keyUsage=critical,keyCertSign,cRLSign" \
-        -keyout opensearch_ca.key -out opensearch_ca.crt 2>/dev/null
-    chmod 400 opensearch_ca.key
-    chmod 444 opensearch_ca.crt
-    echo "Generated secrets/opensearch_ca.crt"
-fi
-
-if [ ! -f opensearch_node.crt ]; then
-    rm -f opensearch_node.key
-    extensions="$(mktemp)"
-    cat >"$extensions" <<CONFIG
-basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth,clientAuth
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid
-subjectAltName=DNS:opensearch,DNS:localhost
-CONFIG
-    openssl req -newkey rsa:2048 -nodes -subj "/CN=opensearch" -keyout opensearch_node.raw.key \
-        -out opensearch_node.csr 2>/dev/null
-    openssl pkcs8 -topk8 -nocrypt -in opensearch_node.raw.key -out opensearch_node.key
-    openssl x509 -req -in opensearch_node.csr -CA opensearch_ca.crt -CAkey opensearch_ca.key \
-        -CAcreateserial -days 825 -extfile "$extensions" -out opensearch_node.crt 2>/dev/null
-    rm -f "$extensions" opensearch_node.raw.key opensearch_node.csr opensearch_ca.srl
-    chmod 444 opensearch_node.key opensearch_node.crt
-    echo "Generated secrets/opensearch_node.crt"
+    chmod 444 internal_users.partial
+    mv internal_users.partial internal_users.yml
+    echo "Generated secrets/opensearch/internal_users.yml"
 fi
