@@ -99,6 +99,7 @@ CI runs lint only.
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
+| `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
 
 ## Licence
 
