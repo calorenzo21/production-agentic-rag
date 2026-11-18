@@ -1,20 +1,16 @@
 from collections.abc import Generator
 from contextlib import contextmanager
+from functools import lru_cache
 
 from sqlalchemy.orm import Session
 from src.db.factory import make_database
 from src.db.interfaces.base import BaseDatabase
 
-# Global database instance
-_database: BaseDatabase | None = None
 
-
+@lru_cache
 def get_database() -> BaseDatabase:
     """Get or create database instance."""
-    global _database
-    if _database is None:
-        _database = make_database()
-    return _database
+    return make_database()
 
 
 @contextmanager
