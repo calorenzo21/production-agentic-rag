@@ -100,6 +100,7 @@ CI runs lint only.
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
+| `src/db/interfaces/base.py` | `BaseRepository` is a contract that no repository follows, and nothing uses it | Removed |
 
 ## Licence
 
