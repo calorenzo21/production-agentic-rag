@@ -6,7 +6,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from src.db.interfaces.base import BaseDatabase
 
 logger = logging.getLogger(__name__)
@@ -21,10 +21,6 @@ class PostgreSQLSettings(BaseSettings):
     max_overflow: int = Field(default=0, description="Maximum pool overflow")
 
     model_config = SettingsConfigDict(env_prefix="POSTGRES_")
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 class PostgreSQLDatabase(BaseDatabase):

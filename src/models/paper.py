@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Column, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import UUID
-from src.db.interfaces.postgresql import Base
+from src.models.base import Base
 
 
 class Paper(Base):
