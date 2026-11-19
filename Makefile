@@ -1,4 +1,4 @@
-.PHONY: help start stop restart status logs health setup format lint test test-cov smoke clean
+.PHONY: help start stop restart status logs health setup format lint test test-cov docker-running smoke clean
 
 # Default target
 help: ## Show this help message
@@ -43,11 +43,17 @@ lint: ## Lint and type check
 	uv run ruff check --fix
 	uv run mypy src/
 
-test: ## Run tests
+# testcontainers ignores Docker contexts, so the tests are pointed at the current one, such as Colima's.
+test test-cov: export DOCKER_HOST ?= $(shell docker context inspect --format '{{.Endpoints.docker.Host}}')
+
+test: docker-running ## Run tests against a disposable PostgreSQL. Needs Docker running, not the stack
 	uv run pytest
 
-test-cov: ## Run tests with coverage
+test-cov: docker-running ## Run tests with coverage
 	uv run pytest --cov=src --cov-report=html
+
+docker-running:
+	@docker info > /dev/null 2>&1 || { echo "The tests need Docker running, for a disposable PostgreSQL. Start it with: colima start" >&2; exit 1; }
 
 smoke: ## Check a running stack, including every security Deviation
 	uv run pytest tests/stack

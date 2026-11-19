@@ -41,11 +41,11 @@ The first build takes several minutes, and the Airflow image is about 3.5 GB bec
 | `make start`, `stop`, `restart`, `status`, `logs` | Manage the services |
 | `make health` | Asks every service for its health |
 | `make lint`, `format` | Ruff and mypy, with the course's configuration |
-| `make test`, `test-cov` | Tests that need no running stack. Week 1 has none yet, so pytest reports that no tests ran |
+| `make test`, `test-cov` | Tests against a disposable PostgreSQL, whose schema the Alembic migrations build. They need Docker running, but not the stack |
 | `make smoke` | Checks a running stack, including every security Deviation |
 | `make clean` | Removes this project's containers and volumes |
 
-CI runs lint only.
+CI runs lint and `make test`.
 
 ## Deviations
 
@@ -76,8 +76,9 @@ CI runs lint only.
 | Topic | Course | This repository |
 |---|---|---|
 | Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
+| Tests | None | `make test`, for this repository's corrections and Deviations |
 | Infrastructure tests | None | `make smoke` |
-| CI | None | Lint |
+| CI | None | Lint and `make test` |
 | Commit hook | None | Rejects tool attribution in commit messages |
 | Ruff | Import order only | Also errors, bugs, simplifications and security rules |
 | mypy | Runs with `ignore_errors` | `strict`, in CI and in the pre-commit hook |
