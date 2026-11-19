@@ -1,27 +1,14 @@
 from collections.abc import Generator
-from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Request
 
 # Week 1: Removed API key authentication for simplicity
 from sqlalchemy.orm import Session
-from src.config import Settings
+from src.config import Settings, get_settings
 from src.db.interfaces.base import BaseDatabase
 
 # Week 1: Simplified - no API key authentication needed for local learning
-
-
-@lru_cache
-def get_settings() -> Settings:
-    """Get application settings."""
-    return Settings()
-
-
-def get_request_settings(request: Request) -> Settings:
-    """Get settings from the request state."""
-    settings: Settings = request.app.state.settings
-    return settings
 
 
 def get_database(request: Request) -> BaseDatabase:

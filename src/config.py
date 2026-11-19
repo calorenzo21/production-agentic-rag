@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Any
 
 from pydantic import Field, field_validator
@@ -48,6 +49,7 @@ class Settings(DefaultSettings):
         return v
 
 
+@lru_cache
 def get_settings() -> Settings:
     """Get application settings."""
     return Settings()
