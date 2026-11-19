@@ -1,5 +1,7 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from src.models.paper import Paper
 from src.schemas.paper import PaperCreate
@@ -32,13 +34,20 @@ class PaperRepository:
         return paper
 
     def upsert(self, paper_create: PaperCreate) -> Paper:
-        # Check if paper already exists
-        existing_paper = self.get_by_arxiv_id(paper_create.arxiv_id)
-        if existing_paper:
-            # Update existing paper
-            for key, value in paper_create.model_dump(exclude_unset=True).items():
-                setattr(existing_paper, key, value)
-            return self.update(existing_paper)
-        else:
-            # Create new paper
-            return self.create(paper_create)
+        """Insert the paper, or update the one with its arxiv_id, in one statement that is safe to run concurrently."""
+        statement = insert(Paper).values(**paper_create.model_dump())
+        updated_columns = {
+            column: statement.excluded[column] for column in paper_create.model_dump(exclude_unset=True) if column != "arxiv_id"
+        }
+        statement = statement.on_conflict_do_update(
+            index_elements=[Paper.arxiv_id],
+            # ON CONFLICT skips the model's onupdate, so updated_at is set here.
+            set_={**updated_columns, "updated_at": datetime.now(UTC)},
+        )
+        paper = self.session.scalars(
+            statement.returning(Paper),
+            # Overwrite a copy of this paper the session may already hold with the row Postgres returns.
+            execution_options={"populate_existing": True},
+        ).one()
+        self.session.commit()
+        return paper
