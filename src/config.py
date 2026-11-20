@@ -14,6 +14,27 @@ class DefaultSettings(BaseSettings):
     )
 
 
+class ArxivSettings(DefaultSettings):
+    """arXiv API client settings."""
+
+    # Without its prefix, it would also read unprefixed variables such as MAX_RESULTS.
+    model_config = SettingsConfigDict(env_prefix="ARXIV__")
+
+    base_url: str = "https://export.arxiv.org/api/query"
+    namespaces: dict[str, str] = Field(
+        default={
+            "atom": "http://www.w3.org/2005/Atom",
+            "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
+            "arxiv": "http://arxiv.org/schemas/atom",
+        }
+    )
+    pdf_cache_dir: str = "./data/arxiv_pdfs"
+    rate_limit_delay: float = 3.0  # seconds between requests
+    timeout_seconds: int = 30
+    max_results: int = 100
+    search_category: str = "cs.AI"  # Default category to search
+
+
 class Settings(DefaultSettings):
     """Application settings."""
 
@@ -39,6 +60,9 @@ class Settings(DefaultSettings):
     ollama_models: str | list[str] = Field(default=["gpt-oss:20b", "llama3.2:1b"])
     ollama_default_model: str = "llama3.2:1b"
     ollama_timeout: int = 300  # 5 minutes for large model operations
+
+    # arXiv settings
+    arxiv: ArxivSettings = Field(default_factory=ArxivSettings)
 
     @field_validator("ollama_models", mode="before")
     @classmethod

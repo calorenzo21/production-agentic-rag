@@ -79,6 +79,7 @@ CI runs lint and `make test`.
 |---|---|---|
 | Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
 | Tests | None | `make test`, for this repository's corrections and Deviations |
+| arXiv in the tests | None | The arXiv client takes an optional HTTP transport, through which the tests fake arXiv |
 | Infrastructure tests | None | `make smoke` |
 | CI | None | Lint and `make test` |
 | Commit hook | None | Rejects tool attribution in commit messages |
@@ -99,12 +100,16 @@ CI runs lint and `make test`.
 | `airflow/init-db.sql` | Invalid SQL for PostgreSQL, and nothing uses it | Removed |
 | `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
 | `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
+| `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
+| `src/config.py` | The nested arXiv settings also read unprefixed variables, such as `MAX_RESULTS` and `BASE_URL` | They read `ARXIV__*` variables only |
 | `src/db/interfaces/base.py` | `BaseRepository` is a contract that no repository follows, and nothing uses it | Removed |
 | `src/repositories/paper.py` | `upsert` looks for the paper and then inserts it, so concurrent upserts of the same paper fail on its unique `arxiv_id` | One `INSERT ... ON CONFLICT DO UPDATE` |
+| `src/services/arxiv/client.py` | Parses arXiv's XML with the standard library, which expands the entities a response declares | Parses it with `defusedxml`, which refuses them |
+| `src/services/metadata_fetcher.py` | A Paper that fails to store aborts the transaction, so every Paper after it in the batch fails too | Rolls back after the failure, so the rest of the batch is stored |
 
 ## Licence
 

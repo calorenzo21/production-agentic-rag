@@ -27,6 +27,32 @@ class OpenSearchException(Exception):
     """Base exception for OpenSearch-related errors."""
 
 
+# Week 2+: ArXiv API exceptions
+class ArxivAPIException(Exception):
+    """Base exception for arXiv API-related errors."""
+
+
+class ArxivAPITimeoutError(ArxivAPIException):
+    """Exception raised when arXiv API request times out."""
+
+
+class ArxivAPIRateLimitError(ArxivAPIException):
+    """Exception raised when arXiv API rate limit is exceeded."""
+
+
+class ArxivParseError(ArxivAPIException):
+    """Exception raised when arXiv API response parsing fails."""
+
+
+# Week 2+: Metadata fetching exceptions
+class MetadataFetchingException(Exception):
+    """Base exception for metadata fetching pipeline errors."""
+
+
+class PipelineException(MetadataFetchingException):
+    """Exception raised during pipeline execution."""
+
+
 # Week 6+: LLM exceptions (placeholders for Week 1)
 class LLMException(Exception):
     """Base exception for LLM-related errors."""
