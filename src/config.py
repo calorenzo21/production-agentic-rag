@@ -35,6 +35,18 @@ class ArxivSettings(DefaultSettings):
     search_category: str = "cs.AI"  # Default category to search
 
 
+class PDFParserSettings(DefaultSettings):
+    """PDF parser service settings."""
+
+    # Without its prefix, it would also read unprefixed variables such as MAX_PAGES.
+    model_config = SettingsConfigDict(env_prefix="PDF_PARSER__")
+
+    max_pages: int = 30
+    max_file_size_mb: int = 20
+    do_ocr: bool = False
+    do_table_structure: bool = True
+
+
 class Settings(DefaultSettings):
     """Application settings."""
 
@@ -63,6 +75,9 @@ class Settings(DefaultSettings):
 
     # arXiv settings
     arxiv: ArxivSettings = Field(default_factory=ArxivSettings)
+
+    # PDF parser settings
+    pdf_parser: PDFParserSettings = Field(default_factory=PDFParserSettings)
 
     @field_validator("ollama_models", mode="before")
     @classmethod

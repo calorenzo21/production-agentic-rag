@@ -8,29 +8,31 @@ from sqlalchemy import text
 from src.db.factory import make_database
 from src.services.arxiv.factory import make_arxiv_client
 from src.services.metadata_fetcher import make_metadata_fetcher
+from src.services.pdf_parser.factory import make_pdf_parser_service
 
 logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
-def get_cached_services() -> tuple[Any, Any, Any]:
+def get_cached_services() -> tuple[Any, Any, Any, Any]:
     """
     Get cached service instances using lru_cache for automatic memoization.
 
     Returns:
-        Tuple of (arxiv_client, database, metadata_fetcher)
+        Tuple of (arxiv_client, pdf_parser, database, metadata_fetcher)
     """
     logger.info("Initializing services (cached with lru_cache)")
 
     # Initialize core services
     arxiv_client = make_arxiv_client()
+    pdf_parser = make_pdf_parser_service()
     database = make_database()
 
     # Create metadata fetcher with dependencies
-    metadata_fetcher = make_metadata_fetcher(arxiv_client)
+    metadata_fetcher = make_metadata_fetcher(arxiv_client, pdf_parser)
 
     logger.info("All services initialized and cached with lru_cache")
-    return arxiv_client, database, metadata_fetcher
+    return arxiv_client, pdf_parser, database, metadata_fetcher
 
 
 def run_day(*, logical_date: datetime | None, run_after: datetime) -> date:
@@ -46,22 +48,24 @@ def day_to_ingest(*, logical_date: datetime | None, run_after: datetime) -> date
     return run_day(logical_date=logical_date, run_after=run_after) - timedelta(days=1)
 
 
-async def run_paper_ingestion_pipeline(target_date: str) -> dict:
+async def run_paper_ingestion_pipeline(target_date: str, process_pdfs: bool = True) -> dict:
     """
     Async wrapper for the paper ingestion pipeline.
 
     Args:
         target_date: Date to fetch papers for (YYYYMMDD format)
+        process_pdfs: Whether to process PDFs
 
     Returns:
         Dictionary with processing results
     """
-    _arxiv_client, database, metadata_fetcher = get_cached_services()
+    _arxiv_client, _pdf_parser, database, metadata_fetcher = get_cached_services()
 
     with database.get_session() as session:
         return await metadata_fetcher.fetch_and_process_papers(
             from_date=target_date,
             to_date=target_date,
+            process_pdfs=process_pdfs,
             store_to_db=True,
             db_session=session,
         )
@@ -73,7 +77,7 @@ def setup_environment():
 
     try:
         # Get cached services (initialized once)
-        arxiv_client, database, _metadata_fetcher = get_cached_services()
+        arxiv_client, _pdf_parser, database, _metadata_fetcher = get_cached_services()
 
         # Test database connection
         with database.get_session() as session:
@@ -81,6 +85,7 @@ def setup_environment():
             logger.info("Database connection verified")
 
         logger.info(f"arXiv client ready: {arxiv_client.base_url}")
+        logger.info("PDF parser service ready (Docling models cached)")
 
         return {"status": "success", "message": "Environment setup completed"}
 
@@ -108,7 +113,7 @@ def fetch_daily_papers(**context):
         logger.info(f"Fetching papers for date: {target_date}")
 
         # Execute paper ingestion pipeline
-        results = asyncio.run(run_paper_ingestion_pipeline(target_date=target_date))
+        results = asyncio.run(run_paper_ingestion_pipeline(target_date=target_date, process_pdfs=True))
         logger.info(f"Daily paper fetch completed: {results}")
 
         # Store results for downstream tasks

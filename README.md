@@ -81,6 +81,7 @@ CI runs lint and `make test`.
 | Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
 | Tests | None | `make test`, for this repository's corrections and Deviations |
 | arXiv in the tests | None | The arXiv client takes an optional HTTP transport, through which the tests fake arXiv |
+| Docling in the tests | None | The PDF parser takes an optional converter, through which the tests fake Docling. The page and size limits stay real |
 | Infrastructure tests | None | `make smoke` |
 | CI | None | Lint and `make test` |
 | Commit hook | None | Rejects tool attribution in commit messages |
@@ -107,11 +108,13 @@ CI runs lint and `make test`.
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
-| `src/config.py` | The nested arXiv settings also read unprefixed variables, such as `MAX_RESULTS` and `BASE_URL` | They read `ARXIV__*` variables only |
+| `src/config.py` | The nested arXiv and PDF parser settings also read unprefixed variables, such as `MAX_RESULTS`, `BASE_URL` and `MAX_PAGES` | They read `ARXIV__*` and `PDF_PARSER__*` variables only |
 | `src/db/interfaces/base.py` | `BaseRepository` is a contract that no repository follows, and nothing uses it | Removed |
 | `src/repositories/paper.py` | `upsert` looks for the paper and then inserts it, so concurrent upserts of the same paper fail on its unique `arxiv_id` | One `INSERT ... ON CONFLICT DO UPDATE` |
+| `src/repositories/paper.py` | When a Paper that has Content fails to parse, the Ingestion keeps its stale Content but marks it as not processed and overwrites its parser metadata | An upsert without Content updates only the metadata, so the Content and the processed state stay as they were. It is still one `INSERT ... ON CONFLICT DO UPDATE` |
 | `src/services/arxiv/client.py` | Parses arXiv's XML with the standard library, which expands the entities a response declares | Parses it with `defusedxml`, which refuses them |
 | `src/services/metadata_fetcher.py` | A Paper that fails to store aborts the transaction, so every Paper after it in the batch fails too | Rolls back after the failure, so the rest of the batch is stored |
+| `src/services/pdf_parser/parser.py`, `src/services/metadata_fetcher.py` | The fetcher's metadata-only path never runs: the parser service raises for a PDF over the page or size limit, which Docling skips, and a failed parse aborts its Paper's pipeline. Either way the Paper is held without Content, but its PDF counts as not downloaded | The parser service returns no Content for a PDF over the limits, and the fetcher sends a failed parse to the metadata-only path. The Paper is held without its Content, and its PDF counts as downloaded but not parsed |
 
 ## Licence
 

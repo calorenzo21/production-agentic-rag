@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,7 +16,18 @@ class PaperBase(BaseModel):
 
 
 class PaperCreate(PaperBase):
-    pass
+    """Schema for creating a paper with optional parsed content."""
+
+    # Parsed PDF content (optional - added when PDF is processed)
+    raw_text: str | None = Field(default=None, description="Full raw text extracted from PDF")
+    sections: list[dict[str, Any]] | None = Field(default=None, description="List of sections with titles and content")
+    references: list[dict[str, Any]] | None = Field(default=None, description="List of references if extracted")
+
+    # PDF processing metadata (optional)
+    parser_used: str | None = Field(default=None, description="Which parser was used (DOCLING, GROBID, etc.)")
+    parser_metadata: dict[str, Any] | None = Field(default=None, description="Additional parser metadata")
+    pdf_processed: bool | None = Field(default=False, description="Whether PDF was successfully processed")
+    pdf_processing_date: datetime | None = Field(default=None, description="When PDF was processed")
 
 
 class PaperResponse(PaperBase):

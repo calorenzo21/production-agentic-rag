@@ -160,19 +160,20 @@ def test_airflow_imports_every_dag() -> None:
     assert errors.returncode == 0, errors.stdout + errors.stderr
 
 
-def arxiv_settings_in(service: str) -> dict[str, str]:
-    code = "import json, os; print(json.dumps({name: value for name, value in os.environ.items() if name.startswith('ARXIV__')}))"
-    return json.loads(compose("exec", "-T", service, "python", "-c", code).stdout)
+def settings_in(service: str, prefix: str) -> dict[str, str]:
+    code = "import json, os, sys; print(json.dumps({n: v for n, v in os.environ.items() if n.startswith(sys.argv[1])}))"
+    return json.loads(compose("exec", "-T", service, "python", "-c", code, prefix).stdout)
 
 
-def test_airflow_alone_receives_the_arxiv_settings_from_env() -> None:
+@pytest.mark.parametrize("prefix", ["ARXIV__", "PDF_PARSER__"])
+def test_airflow_alone_receives_the_ingestion_settings_from_env(prefix: str) -> None:
     # A setting missing or empty in .env takes compose.yml's default, which is the value .env.example gives it.
     example = dotenv_values(REPOSITORY / ".env.example")
-    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith("ARXIV__")}
+    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith(prefix)}
 
     assert expected
-    assert arxiv_settings_in("airflow") == expected
-    assert arxiv_settings_in("api") == {}
+    assert settings_in("airflow", prefix) == expected
+    assert settings_in("api", prefix) == {}
 
 
 def test_the_week_1_dag_runs() -> None:
