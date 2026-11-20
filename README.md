@@ -64,6 +64,7 @@ CI runs lint and `make test`.
 | Airflow metadata | Shared with the application in `rag_db` | Its own database and user. DAGs still reach `rag_db`, as ingestion needs it |
 | Airflow encryption keys | Not set | Generated Fernet, API secret and JWT keys |
 | Airflow version | 2.10.3, with SQLAlchemy 1.4 | 3.3.2, with the same SQLAlchemy version as the application ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
+| Ingestion DAG | Airflow 2's imports and operators, and the run's day taken from `ds` | Airflow 3's SDK, standard provider and a trigger timetable, which makes a run's logical date the day it runs. The run's day comes from the run, so a manual run without a logical date, which Airflow 3 allows and which has no `ds`, takes the day it runs |
 | Docling | In the application's dependencies, so the API image installs it too | In the Airflow image and in the `dev` dependency group, which the tests and CI use. The API image has none, as the API never parses PDFs |
 | Docling and Pydantic versions | Resolved separately for Airflow and for the application | The same version of each in the Airflow image and in `uv.lock`. Airflow's constraints decide Pydantic's, and `make smoke` checks both ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
 | Docling's torch | The default build, with NVIDIA libraries | The CPU build, in Airflow and in the `dev` group, as neither the containers nor CI has a GPU |
@@ -94,12 +95,13 @@ CI runs lint and `make test`.
 | `Makefile` | `make clean` prunes Docker for every project on the machine | Removes this project's containers and volumes only |
 | `Dockerfile` | Needs BuildKit for `--mount` options it does not need, so it fails to build on Colima's default builder | Options removed |
 | `compose.yml` | Mounts `airflow/plugins`, which is not in the repository | Mount removed |
-| `compose.yml` | `PYTHONPATH` makes `src.*` impossible to import from a DAG | Points to the parent of `src` |
+| `compose.yml` | `PYTHONPATH` makes `src.*` impossible to import from a DAG | Points to the parent of `src`, so the DAG's tasks no longer insert it into `sys.path` |
 | `compose.yml` | The PostgreSQL health check passes during first-time setup, before the server is really up | Checks over TCP |
 | `compose.yml` | The Dashboards health check needs a login once security is on | Checks the login page |
 | `airflow/init-db.sql` | Invalid SQL for PostgreSQL, and nothing uses it | Removed |
 | `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
 | `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
+| `airflow/dags/arxiv_paper_ingestion.py` | Runs Monday to Friday, so the Papers submitted on a Friday or a Saturday are never ingested | Runs every day at the course's hour, and each run ingests the day before it. `catchup` stays off, and missed days are recovered with Airflow 3's backfill, whose run of a day also ingests the day before |
 | `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |

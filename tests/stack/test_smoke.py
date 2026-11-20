@@ -150,6 +150,31 @@ def test_the_api_image_has_no_docling() -> None:
     assert not can_import("api", "docling")
 
 
+def test_airflow_imports_every_dag() -> None:
+    # --local parses the DAGs now instead of reading what the DAG processor last recorded. The bundle puts the DAGs
+    # folder on the path, as the DAG processor does.
+    errors = compose(
+        "exec", "-T", "airflow", "airflow", "dags", "list-import-errors", "--local", "--bundle-name", "dags-folder", check=False
+    )
+
+    assert errors.returncode == 0, errors.stdout + errors.stderr
+
+
+def arxiv_settings_in(service: str) -> dict[str, str]:
+    code = "import json, os; print(json.dumps({name: value for name, value in os.environ.items() if name.startswith('ARXIV__')}))"
+    return json.loads(compose("exec", "-T", service, "python", "-c", code).stdout)
+
+
+def test_airflow_alone_receives_the_arxiv_settings_from_env() -> None:
+    # A setting missing or empty in .env takes compose.yml's default, which is the value .env.example gives it.
+    example = dotenv_values(REPOSITORY / ".env.example")
+    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith("ARXIV__")}
+
+    assert expected
+    assert arxiv_settings_in("airflow") == expected
+    assert arxiv_settings_in("api") == {}
+
+
 def test_the_week_1_dag_runs() -> None:
     run = compose("exec", "-T", "airflow", "airflow", "dags", "test", "hello_world_week1", check=False)
 
