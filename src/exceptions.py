@@ -34,6 +34,10 @@ class PDFDownloadTimeoutError(PDFDownloadException):
     """Exception raised when PDF download times out."""
 
 
+class PDFTooLargeError(PDFDownloadException):
+    """Exception raised when a PDF download exceeds the size limit."""
+
+
 class PDFCacheException(Exception):
     """Exception raised for PDF cache-related errors."""
 

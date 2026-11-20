@@ -80,7 +80,7 @@ CI runs lint and `make test`.
 |---|---|---|
 | Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
 | Tests | None | `make test`, for this repository's corrections and Deviations |
-| arXiv in the tests | None | The arXiv client takes an optional HTTP transport, through which the tests fake arXiv |
+| arXiv in the tests | None | The arXiv client takes an optional HTTP transport, through which the tests fake arXiv. It times the wait between requests on the event loop's clock, which the tests make virtual, so they check the rate limit without waiting |
 | Docling in the tests | None | The PDF parser takes an optional converter, through which the tests fake Docling. The page and size limits stay real |
 | Infrastructure tests | None | `make smoke` |
 | CI | None | Lint and `make test` |
@@ -113,8 +113,12 @@ CI runs lint and `make test`.
 | `src/repositories/paper.py` | `upsert` looks for the paper and then inserts it, so concurrent upserts of the same paper fail on its unique `arxiv_id` | One `INSERT ... ON CONFLICT DO UPDATE` |
 | `src/repositories/paper.py` | When a Paper that has Content fails to parse, the Ingestion keeps its stale Content but marks it as not processed and overwrites its parser metadata | An upsert without Content updates only the metadata, so the Content and the processed state stay as they were. It is still one `INSERT ... ON CONFLICT DO UPDATE` |
 | `src/services/arxiv/client.py` | Parses arXiv's XML with the standard library, which expands the entities a response declares | Parses it with `defusedxml`, which refuses them |
+| `src/services/arxiv/client.py` | Each PDF download waits the rate limit delay on its own, ignoring the previous request, so concurrent downloads reach arXiv at the same moment, breaking its limit of one request every 3 seconds | Every request to arXiv, whether an API query or an attempt at a PDF download, books its start at least `ARXIV__RATE_LIMIT_DELAY` after the previous one's, so concurrent downloads come one delay apart |
+| `src/services/arxiv/client.py`, `src/services/arxiv/factory.py` | Downloads a PDF whole, however large, before the parser refuses it for exceeding the size limit | The download stops as soon as the PDF exceeds `PDF_PARSER__MAX_FILE_SIZE_MB`, without retrying, and leaves no file. The Paper is held without its Content, and its PDF counts as not downloaded |
+| `src/services/arxiv/client.py` | A failed download leaves its partial PDF in the cache, as the cleanup after the retries never runs, so every later Ingestion reuses the corrupt file | Each attempt downloads under a temporary name, which becomes the PDF's only once complete, and a failed attempt removes it. The next Ingestion downloads the PDF again |
+| `src/services/arxiv/client.py` | PDF downloads time out after a hard-coded 30 seconds, ignoring `ARXIV__TIMEOUT_SECONDS` | They time out after `ARXIV__TIMEOUT_SECONDS`, as the API queries do |
 | `src/services/metadata_fetcher.py` | A Paper that fails to store aborts the transaction, so every Paper after it in the batch fails too | Rolls back after the failure, so the rest of the batch is stored |
-| `src/services/pdf_parser/parser.py`, `src/services/metadata_fetcher.py` | The fetcher's metadata-only path never runs: the parser service raises for a PDF over the page or size limit, which Docling skips, and a failed parse aborts its Paper's pipeline. Either way the Paper is held without Content, but its PDF counts as not downloaded | The parser service returns no Content for a PDF over the limits, and the fetcher sends a failed parse to the metadata-only path. The Paper is held without its Content, and its PDF counts as downloaded but not parsed |
+| `src/services/pdf_parser/parser.py`, `src/services/metadata_fetcher.py` | The fetcher's metadata-only path never runs: the parser service raises for a PDF over the page or size limit, which Docling skips, and a failed parse aborts its Paper's pipeline. Either way the Paper is held without Content, but its PDF counts as not downloaded | The parser service returns no Content for a PDF over the limits, and the fetcher sends a failed parse to the metadata-only path. The Paper is held without its Content, and its PDF counts as downloaded but not parsed. A PDF over the size limit now stops during its download instead, before the parser sees it (see `src/services/arxiv/client.py`) |
 
 ## Licence
 

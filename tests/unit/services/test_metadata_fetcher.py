@@ -1,7 +1,14 @@
-"""The Ingestion of a day, through the metadata fetcher, with arXiv faked over HTTP, Docling faked and a real PostgreSQL."""
+"""
+The Ingestion of a day, through the metadata fetcher, with arXiv faked over HTTP, Docling faked and a real PostgreSQL.
+Time is virtual, so arXiv's rate limit holds without making the tests wait.
+"""
 
+import asyncio
 import io
-from collections.abc import Iterator, Sequence
+import itertools
+import selectors
+from collections import Counter
+from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +29,9 @@ from src.services.metadata_fetcher import make_metadata_fetcher
 from src.services.pdf_parser.parser import PDFParserService
 
 DAY = "20241101"
+
+# arXiv sends a PDF in chunks of this many bytes.
+CHUNK_SIZE = 64 * 1024
 
 
 def atom_entry(
@@ -83,24 +93,51 @@ def pdf(pages: int = 1) -> bytes:
 
 class FakeArxiv:
     """
-    arXiv over HTTP. Its API answers every query with one feed and keeps the queries it received. Its PDF links serve
-    a one-page PDF, unless the test gives a Paper another one.
+    arXiv over HTTP. Its API answers every query with one feed and keeps the queries it received. Its PDF links stream
+    a one-page PDF, unless the test gives a Paper another one, and drop the connection halfway through the PDFs the
+    test names.
     """
 
     def __init__(self) -> None:
         self.feed = atom_feed()
         self.queries: list[httpx.QueryParams] = []
         self.pdfs: dict[str, bytes] = {}
+        self.dropping: set[str] = set()
+        # The arXiv ID of the Paper whose PDF each download asked for.
+        self.downloads: list[str] = []
+        # How many bytes of each Paper's PDF it sent, over every download.
+        self.bytes_sent: Counter[str] = Counter()
+        # When each request arrived, on the event loop's clock, whether it queried the API or downloaded a PDF.
+        self.request_times: list[float] = []
+        # The timeouts each request asked the network to enforce, in seconds, whether it queried the API or downloaded a PDF.
+        self.timeouts: list[dict[str, float | None]] = []
         self.transport = httpx.MockTransport(self._respond)
 
     def lists(self, *entries: str) -> None:
         self.feed = atom_feed(*entries)
 
+    def drops_the_connection_during(self, arxiv_id: str) -> None:
+        self.dropping.add(arxiv_id)
+
     def _respond(self, request: httpx.Request) -> httpx.Response:
+        self.request_times.append(asyncio.get_running_loop().time())
+        self.timeouts.append(request.extensions["timeout"])
         if request.url.path.startswith("/pdf/"):
-            return httpx.Response(200, content=self.pdfs.get(request.url.path.removeprefix("/pdf/"), pdf()))
+            arxiv_id = request.url.path.removeprefix("/pdf/")
+            self.downloads.append(arxiv_id)
+            return httpx.Response(200, content=self._stream_pdf(arxiv_id, request))
         self.queries.append(request.url.params)
         return httpx.Response(200, text=self.feed)
+
+    async def _stream_pdf(self, arxiv_id: str, request: httpx.Request) -> AsyncIterator[bytes]:
+        pdf_bytes = self.pdfs.get(arxiv_id, pdf())
+        if arxiv_id in self.dropping:
+            yield pdf_bytes[: len(pdf_bytes) // 2]
+            raise httpx.ReadError("The connection dropped", request=request)
+        for start in range(0, len(pdf_bytes), CHUNK_SIZE):
+            chunk = pdf_bytes[start : start + CHUNK_SIZE]
+            self.bytes_sent[arxiv_id] += len(chunk)
+            yield chunk
 
 
 def extracted_document(arxiv_id: str) -> DoclingDocument:
@@ -128,6 +165,45 @@ class FakeDocling:
         return SimpleNamespace(document=extracted_document(arxiv_id))
 
 
+class VirtualTimeLoop(asyncio.SelectorEventLoop):
+    """
+    An event loop whose clock stands still while a task can run, and jumps to the next timer once every task waits.
+    Sleeps take no real time, yet concurrent sleeps end in the order, and at the times, they would.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        super().__init__(ClockJumpingSelector(self))
+
+    def time(self) -> float:
+        return self.now
+
+
+class ClockJumpingSelector(selectors.DefaultSelector):
+    """Instead of waiting for its loop's next timer, moves the loop's clock forward to it."""
+
+    def __init__(self, loop: VirtualTimeLoop) -> None:
+        super().__init__()
+        self.loop = loop
+
+    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
+        if timeout:
+            self.loop.now += timeout
+            timeout = 0
+        return super().select(timeout)
+
+
+class VirtualTimePolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self) -> asyncio.AbstractEventLoop:
+        return VirtualTimeLoop()
+
+
+@pytest.fixture(scope="module")
+def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
+    """pytest-asyncio runs each test of this module on a VirtualTimeLoop."""
+    return VirtualTimePolicy()
+
+
 @pytest.fixture
 def arxiv() -> FakeArxiv:
     return FakeArxiv()
@@ -139,10 +215,10 @@ def docling() -> FakeDocling:
 
 
 @pytest.fixture(autouse=True)
-def pdf_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test downloads its PDFs into a cache of its own, without waiting between requests."""
+def pdf_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Each test downloads its PDFs into a cache of its own."""
     monkeypatch.setenv("ARXIV__PDF_CACHE_DIR", str(tmp_path))
-    monkeypatch.setenv("ARXIV__RATE_LIMIT_DELAY", "0")
+    return tmp_path
 
 
 @pytest.fixture
@@ -167,7 +243,8 @@ async def ingest(day: str, arxiv: FakeArxiv, docling: FakeDocling, database: Bas
         do_table_structure=settings.pdf_parser.do_table_structure,
         converter=docling,
     )
-    fetcher = make_metadata_fetcher(ArxivClient(settings.arxiv, transport=arxiv.transport), pdf_parser)
+    arxiv_client = ArxivClient(settings.arxiv, max_pdf_size_mb=settings.pdf_parser.max_file_size_mb, transport=arxiv.transport)
+    fetcher = make_metadata_fetcher(arxiv_client, pdf_parser)
     with database.get_session() as session:
         return await fetcher.fetch_and_process_papers(from_date=day, to_date=day, db_session=session)
 
@@ -338,26 +415,12 @@ async def test_a_paper_whose_pdf_fails_to_parse_is_stored_without_content(
     assert (results["pdfs_downloaded"], results["pdfs_parsed"]) == (2, 1)
 
 
-@pytest.mark.parametrize(
-    ("limit", "pdf_over_the_limit"),
-    [
-        (("PDF_PARSER__MAX_PAGES", "1"), pdf(pages=2)),
-        # Padded after its end, where no PDF reader looks.
-        (("PDF_PARSER__MAX_FILE_SIZE_MB", "1"), pdf(pages=1) + b"%" + b"0" * 1024 * 1024),
-    ],
-    ids=["over the page limit", "over the size limit"],
-)
-async def test_a_pdf_over_the_page_or_size_limit_stores_its_paper_without_content(
-    limit: tuple[str, str],
-    pdf_over_the_limit: bytes,
-    arxiv: FakeArxiv,
-    docling: FakeDocling,
-    database: BaseDatabase,
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_pdf_over_the_page_limit_stores_its_paper_without_content(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(*limit)
+    monkeypatch.setenv("PDF_PARSER__MAX_PAGES", "1")
     arxiv.lists(atom_entry("2411.00001v1"))
-    arxiv.pdfs["2411.00001v1"] = pdf_over_the_limit
+    arxiv.pdfs["2411.00001v1"] = pdf(pages=2)
 
     results = await ingest(DAY, arxiv, docling, database)
 
@@ -412,3 +475,64 @@ async def test_ingesting_a_day_again_stores_the_content_of_a_paper_whose_pdf_fai
         [],
     )
     assert paper.pdf_processed
+
+
+async def test_requests_to_arxiv_pdf_downloads_included_come_at_least_the_rate_limit_delay_apart(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARXIV__RATE_LIMIT_DELAY", "3")
+    # Five Papers, whose PDFs the fetcher downloads concurrently.
+    arxiv.lists(*(atom_entry(f"2411.0000{number}v1") for number in range(5, 0, -1)))
+
+    await ingest(DAY, arxiv, docling, database)
+
+    gaps = [later - earlier for earlier, later in itertools.pairwise(arxiv.request_times)]
+    assert len(gaps) == 5
+    assert min(gaps) >= 3
+
+
+async def test_a_failed_download_leaves_no_partial_pdf_and_the_next_ingestion_downloads_it_again(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, pdf_cache: Path
+) -> None:
+    arxiv.lists(atom_entry("2411.00001v1"))
+    arxiv.drops_the_connection_during("2411.00001v1")
+
+    await ingest(DAY, arxiv, docling, database)
+
+    assert list(pdf_cache.iterdir()) == []
+    arxiv_reachable_again = FakeArxiv()
+    arxiv_reachable_again.lists(atom_entry("2411.00001v1"))
+    await ingest(DAY, arxiv_reachable_again, docling, database)
+    assert arxiv_reachable_again.downloads == ["2411.00001v1"]
+
+
+async def test_a_pdf_over_the_size_limit_stops_downloading_leaves_no_file_and_stores_its_paper_without_content(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, pdf_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PDF_PARSER__MAX_FILE_SIZE_MB", "1")
+    arxiv.lists(atom_entry("2411.00001v1"))
+    # Padded after its end, where no PDF reader looks.
+    pdf_over_the_limit = pdf() + b"%" + b"0" * 3 * 1024 * 1024
+    arxiv.pdfs["2411.00001v1"] = pdf_over_the_limit
+
+    results = await ingest(DAY, arxiv, docling, database)
+
+    # One download, stopped before the whole PDF arrived, and not retried.
+    assert arxiv.downloads == ["2411.00001v1"]
+    assert arxiv.bytes_sent["2411.00001v1"] < len(pdf_over_the_limit)
+    assert list(pdf_cache.iterdir()) == []
+    [paper] = held_papers(database)
+    assert (content(paper), paper.pdf_processed) == ((None, None, None), False)
+    assert (results["pdfs_downloaded"], results["pdfs_parsed"]) == (0, 0)
+
+
+async def test_requests_to_arxiv_pdf_downloads_included_time_out_after_arxiv_timeout_seconds(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ARXIV__TIMEOUT_SECONDS", "7")
+    arxiv.lists(atom_entry("2411.00001v1"))
+
+    await ingest(DAY, arxiv, docling, database)
+
+    query_timeouts, download_timeouts = arxiv.timeouts
+    assert query_timeouts == download_timeouts == {"connect": 7, "read": 7, "write": 7, "pool": 7}

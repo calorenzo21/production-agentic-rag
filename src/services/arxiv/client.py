@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from functools import cached_property
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -9,7 +8,14 @@ from xml.etree.ElementTree import Element, ParseError
 import httpx
 from defusedxml.ElementTree import fromstring
 from src.config import ArxivSettings
-from src.exceptions import ArxivAPIException, ArxivAPITimeoutError, ArxivParseError, PDFDownloadException, PDFDownloadTimeoutError
+from src.exceptions import (
+    ArxivAPIException,
+    ArxivAPITimeoutError,
+    ArxivParseError,
+    PDFDownloadException,
+    PDFDownloadTimeoutError,
+    PDFTooLargeError,
+)
 from src.schemas.arxiv.paper import ArxivPaper
 
 logger = logging.getLogger(__name__)
@@ -18,11 +24,14 @@ logger = logging.getLogger(__name__)
 class ArxivClient:
     """Client for fetching papers from arXiv API."""
 
-    def __init__(self, settings: ArxivSettings, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, settings: ArxivSettings, max_pdf_size_mb: int, transport: httpx.AsyncBaseTransport | None = None):
         self._settings = settings
+        # A PDF download stops as soon as it exceeds this size, the PDF parser's limit, so a huge file cannot fill the disk.
+        self._max_pdf_size_mb = max_pdf_size_mb
         # None sends requests over the network. Tests pass a transport that fakes arXiv.
         self._transport = transport
-        self._last_request_time: float | None = None
+        # The earliest time, on the event loop's clock, at which the next request to arXiv may start.
+        self._next_request_time: float | None = None
 
     @cached_property
     def pdf_cache_dir(self) -> Path:
@@ -106,14 +115,7 @@ class ArxivClient:
         try:
             logger.info(f"Fetching {max_results} {self.search_category} papers from arXiv")
 
-            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
-            if self._last_request_time is not None:
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < self.rate_limit_delay:
-                    sleep_time = self.rate_limit_delay - time_since_last
-                    await asyncio.sleep(sleep_time)
-
-            self._last_request_time = time.time()
+            await self._wait_for_rate_limit()
 
             async with httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client:
                 response = await client.get(url)
@@ -181,14 +183,7 @@ class ArxivClient:
         url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
 
         try:
-            # Add rate limiting delay between all requests (arXiv recommends 3 seconds)
-            if self._last_request_time is not None:
-                time_since_last = time.time() - self._last_request_time
-                if time_since_last < self.rate_limit_delay:
-                    sleep_time = self.rate_limit_delay - time_since_last
-                    await asyncio.sleep(sleep_time)
-
-            self._last_request_time = time.time()
+            await self._wait_for_rate_limit()
 
             async with httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client:
                 response = await client.get(url)
@@ -250,6 +245,18 @@ class ArxivClient:
         except Exception as e:
             logger.error(f"Failed to fetch paper {arxiv_id} from arXiv: {e}")
             raise ArxivAPIException(f"Unexpected error fetching paper {arxiv_id} from arXiv: {e}") from e
+
+    async def _wait_for_rate_limit(self) -> None:
+        """
+        Wait until the next request to arXiv may start, at least rate_limit_delay after the previous one starts.
+
+        Each request books its start before it waits, so concurrent requests, PDF downloads included, are spaced too.
+        Time is the event loop's clock, which asyncio.sleep follows.
+        """
+        now = asyncio.get_running_loop().time()
+        start = now if self._next_request_time is None else max(now, self._next_request_time)
+        self._next_request_time = start + self.rate_limit_delay
+        await asyncio.sleep(start - now)
 
     def _parse_response(self, xml_data: str) -> list[ArxivPaper]:
         """
@@ -459,21 +466,29 @@ class ArxivClient:
             True if successful, False otherwise
         """
         logger.info(f"Downloading PDF from {url}")
-
-        # Respect rate limits
-        await asyncio.sleep(self.rate_limit_delay)
+        # The PDF arrives under this name and takes its own only once complete, so the cache never holds part of one.
+        partial_path = path.with_name(f"{path.name}.part")
+        max_size_bytes = self._max_pdf_size_mb * 1024 * 1024
 
         for attempt in range(max_retries):
+            # Each attempt is a request to arXiv.
+            await self._wait_for_rate_limit()
             try:
                 async with (
-                    httpx.AsyncClient(timeout=30.0, transport=self._transport) as client,
+                    httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client,
                     client.stream("GET", url) as response,
                 ):
                     response.raise_for_status()
+                    size = 0
                     # Each write goes to the local PDF cache and is short.
-                    with open(path, "wb") as f:  # noqa: ASYNC230
+                    with open(partial_path, "wb") as f:  # noqa: ASYNC230
                         async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > max_size_bytes:
+                                logger.warning(f"Stopped downloading {path.name}, over the {self._max_pdf_size_mb} MB limit")
+                                raise PDFTooLargeError(f"PDF over the {self._max_pdf_size_mb} MB limit: {url}")
                             f.write(chunk)
+                partial_path.replace(path)
                 logger.info(f"Successfully downloaded to {path.name}")
                 return True
 
@@ -495,12 +510,14 @@ class ArxivClient:
                 else:
                     logger.error(f"Failed after {max_retries} attempts: {e}")
                     raise PDFDownloadException(f"PDF download failed after {max_retries} attempts: {e}") from e
+            except PDFTooLargeError:
+                # No retry would make the PDF smaller.
+                raise
             except Exception as e:
                 logger.error(f"Unexpected download error: {e}")
                 raise PDFDownloadException(f"Unexpected error during PDF download: {e}") from e
-
-        # Clean up partial download
-        if path.exists():
-            path.unlink()
+            finally:
+                # A failed attempt leaves nothing behind, and the next Ingestion downloads the PDF again.
+                partial_path.unlink(missing_ok=True)
 
         return False
