@@ -6,7 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi[standard]>=0.115.12",
     "uvicorn>=0.34.0",
-    "pydantic>=2.11.3",
+    # Airflow's constraints decide this version, as Airflow runs this code too (ADR 0003).
+    "pydantic==2.13.5",
     "pydantic-settings>=2.8.1",
     "sqlalchemy>=2.0.52",
     "psycopg2-binary>=2.9.10",
@@ -21,6 +22,8 @@ readme = "README.md"
 dev = [
     "anyio[trio]>=4.9.0",
     "asgi-lifespan>=2.1.0",
+    # The Airflow image installs the same version (ADR 0003). The API image does not install Docling.
+    "docling==2.147.0",
     "jupyter>=1.1.1",
     "mypy>=1.15.0",
     "notebook>=7.4.4",
@@ -34,7 +37,20 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.11.5",
     "testcontainers>=4.10.0",
+    # Docling's, listed here because uv takes only direct dependencies from the CPU index below.
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
 ]
+
+# Docling needs torch. The CPU build has no NVIDIA libraries, as in the Airflow image.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 130

@@ -11,3 +11,5 @@ Airflow tasks import the application's code from `src/`, but Airflow 2 caps SQLA
 ## Consequences
 
 DAGs from later Weeks of the course will not work unchanged: they need Airflow 3's imports and the removal of what Airflow 3 dropped. Airflow's constraints set the lowest SQLAlchemy version the application can use, and `make smoke` fails if the two versions differ.
+
+From Week 2 the same rule covers Docling and Pydantic, which the ingestion code in `src/` also uses inside Airflow. The application and the Airflow image pin the same version of each, Airflow's constraints decide where they set one, and `make smoke` fails if any of them differ.

@@ -8,6 +8,7 @@ import json
 import re
 import ssl
 import subprocess
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -109,12 +110,44 @@ def test_airflow_tasks_can_use_the_application_database_code() -> None:
     assert attempt.returncode == 0, attempt.stderr
 
 
-def test_airflow_and_the_api_share_the_sqlalchemy_version() -> None:
-    code = "import sqlalchemy; print(sqlalchemy.__version__)"
+def installed_version(service: str, package: str) -> str | None:
+    """The version of a package installed in a service's container, or None if it is not installed."""
+    code = (
+        "import importlib.metadata as metadata, sys\n"
+        "try: print(metadata.version(sys.argv[1]))\n"
+        "except metadata.PackageNotFoundError: pass"
+    )
+    return compose("exec", "-T", service, "python", "-c", code, package).stdout.strip() or None
 
-    versions = {service: compose("exec", "-T", service, "python", "-c", code).stdout.strip() for service in ("airflow", "api")}
 
+@pytest.mark.parametrize("package", ["sqlalchemy", "pydantic"])
+def test_airflow_and_the_api_share_the_version_of(package: str) -> None:
+    versions = {service: installed_version(service, package) for service in ("airflow", "api")}
+
+    assert versions["airflow"] is not None
     assert versions["airflow"] == versions["api"], versions
+
+
+def locked_version(package: str) -> str | None:
+    lock = tomllib.loads((REPOSITORY / "uv.lock").read_text())
+    return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
+
+
+def test_airflow_runs_the_docling_version_in_the_lock() -> None:
+    version = installed_version("airflow", "docling")
+
+    assert version is not None
+    assert version == locked_version("docling")
+
+
+def can_import(service: str, module: str) -> bool:
+    # Checks the import, not the distribution: the `docling` distribution only depends on `docling-slim`, which has the code.
+    code = "import importlib.util, sys; print(importlib.util.find_spec(sys.argv[1]) is not None)"
+    return compose("exec", "-T", service, "python", "-c", code, module).stdout.strip() == "True"
+
+
+def test_the_api_image_has_no_docling() -> None:
+    assert not can_import("api", "docling")
 
 
 def test_the_week_1_dag_runs() -> None:

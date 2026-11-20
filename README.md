@@ -64,7 +64,9 @@ CI runs lint and `make test`.
 | Airflow metadata | Shared with the application in `rag_db` | Its own database and user. DAGs still reach `rag_db`, as ingestion needs it |
 | Airflow encryption keys | Not set | Generated Fernet, API secret and JWT keys |
 | Airflow version | 2.10.3, with SQLAlchemy 1.4 | 3.3.2, with the same SQLAlchemy version as the application ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
-| Airflow's torch | The default build, with NVIDIA libraries | The CPU build, as the containers have no GPU |
+| Docling | In the application's dependencies, so the API image installs it too | In the Airflow image and in the `dev` dependency group, which the tests and CI use. The API image has none, as the API never parses PDFs |
+| Docling and Pydantic versions | Resolved separately for Airflow and for the application | The same version of each in the Airflow image and in `uv.lock`. Airflow's constraints decide Pydantic's, and `make smoke` checks both ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
+| Docling's torch | The default build, with NVIDIA libraries | The CPU build, in Airflow and in the `dev` group, as neither the containers nor CI has a GPU |
 | Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
 | OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
 | OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |
