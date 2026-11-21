@@ -103,6 +103,7 @@ CI runs lint and `make test`.
 | `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
 | `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
 | `airflow/dags/arxiv_paper_ingestion.py` | Runs Monday to Friday, so the Papers submitted on a Friday or a Saturday are never ingested | Runs every day at the course's hour, and each run ingests the day before it. `catchup` stays off, and missed days are recovered with Airflow 3's backfill, whose run of a day also ingests the day before |
+| `airflow/dags/arxiv_paper_ingestion.py`, `airflow/dags/arxiv_ingestion/tasks.py` | The cleanup deletes PDFs older than 30 days from `/tmp`, but the arXiv client downloads them into `ARXIV__PDF_CACHE_DIR`, so that folder grows with every run | A Python task deletes them from the folder in the arXiv client's setting, resolved against the same working directory as the downloads. Newer PDFs stay, as the client reuses them instead of downloading them again |
 | `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |

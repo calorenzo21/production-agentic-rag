@@ -5,6 +5,7 @@ from airflow.sdk import DAG, CronTriggerTimetable
 
 # Import task functions from separate module
 from arxiv_ingestion.tasks import (
+    cleanup_temp_files,
     create_opensearch_placeholders,
     fetch_daily_papers,
     generate_daily_report,
@@ -69,6 +70,13 @@ report_task = PythonOperator(
     dag=dag,
 )
 
+# Deletes PDFs older than 30 days from the folder the arXiv client downloads them into.
+cleanup_task = PythonOperator(
+    task_id="cleanup_temp_files",
+    python_callable=cleanup_temp_files,
+    dag=dag,
+)
+
 # Task dependencies
-# Main pipeline: setup -> fetch -> (retry + opensearch) -> report
-setup_task >> fetch_task >> [retry_task, opensearch_task] >> report_task
+# Main pipeline: setup -> fetch -> (retry + opensearch) -> report -> cleanup
+setup_task >> fetch_task >> [retry_task, opensearch_task] >> report_task >> cleanup_task
