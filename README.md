@@ -4,7 +4,7 @@ A research assistant that collects academic papers from arXiv and answers resear
 
 This repository follows the [Production Agentic RAG course](https://github.com/jamwithai/production-agentic-rag-course) Week by Week, and its structure stays faithful to the course except for the Deviations listed below ([ADR 0002](docs/adr/0002-follow-the-course-with-recorded-deviations.md)). The course's own README explains each Week.
 
-**Current Week: 1, Infrastructure.**
+**Current Week: 2, Ingestion.** Every day, Airflow runs an Ingestion of the Papers that arXiv lists for the previous day in the configured Category, `cs.AI` by default, and stores each Paper in `rag_db`, with its Content when Docling can parse its PDF. The API lists the Papers the curator holds (`GET /api/v1/papers/`), returns one by its arXiv ID (`GET /api/v1/papers/{arxiv_id}`) and reports the health of the database and Ollama (`GET /api/v1/health`). It answers no questions yet, as the course removes `/ask` at this Week.
 
 ## Setup on a Mac
 
@@ -24,6 +24,8 @@ make start
 ```
 
 The first build takes several minutes, and the Airflow image is about 3.5 GB because the course installs Docling in it. `make status` shows when the services are healthy.
+
+Airflow creates the `arxiv_paper_ingestion` DAG paused: unpause it in Airflow's interface for the daily Ingestion to start. The first parse after the Airflow container is created downloads Docling's models from Hugging Face, which takes about 100 seconds.
 
 | Service | Address | Login |
 |---|---|---|
@@ -102,7 +104,7 @@ CI runs lint and `make test`.
 | `airflow/init-db.sql` | Invalid SQL for PostgreSQL, and nothing uses it | Removed |
 | `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
 | `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
-| `airflow/dags/arxiv_paper_ingestion.py` | Runs Monday to Friday, so the Papers submitted on a Friday or a Saturday are never ingested | Runs every day at the course's hour, and each run ingests the day before it. `catchup` stays off, and missed days are recovered with Airflow 3's backfill, whose run of a day also ingests the day before |
+| `airflow/dags/arxiv_paper_ingestion.py` | Runs Monday to Friday, so the Papers submitted on a Friday or a Saturday are never ingested | Runs every day at the course's hour, and each run ingests the day before it. `catchup` stays off, and missed days are recovered with Airflow 3's backfill, whose run of a day also ingests the day before. Every day now has its run, but so far the runs collect no more Papers than the course's schedule did: arXiv lists a day's Papers only once it announces them, at 20:00 ET from Sunday to Thursday, each time up to 14:00 ET that day. So the runs of Saturday to Monday find none of Friday's to Sunday's Papers, and a weekday run never sees the Papers of its day submitted after 14:00 ET. Until [#31](https://github.com/calorenzo21/production-agentic-rag/issues/31), a backfill after the announcement collects them |
 | `airflow/dags/arxiv_paper_ingestion.py`, `airflow/dags/arxiv_ingestion/tasks.py` | The cleanup deletes PDFs older than 30 days from `/tmp`, but the arXiv client downloads them into `ARXIV__PDF_CACHE_DIR`, so that folder grows with every run | A Python task deletes them from the folder in the arXiv client's setting, resolved against the same working directory as the downloads. Newer PDFs stay, as the client reuses them instead of downloading them again |
 | `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
