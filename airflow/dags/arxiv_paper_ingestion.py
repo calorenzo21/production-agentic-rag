@@ -31,8 +31,9 @@ dag = DAG(
     default_args=default_args,
     description="Daily arXiv CS.AI paper ingestion and processing pipeline",
     # Every day at 6 AM UTC, weekends included. A trigger timetable makes a run's logical date the day it runs,
-    # and each run ingests the day before. Missed days are recovered with `airflow backfill create`, whose run of
-    # a day also ingests the day before: recovering the 17th means backfilling the 18th.
+    # and each run ingests the day four days before, the most recent day arXiv has always finished announcing (see
+    # ANNOUNCEMENT_LAG). Missed days are recovered with `airflow backfill create`, whose run of a day also ingests
+    # four days before: recovering the 17th means backfilling the 21st.
     schedule=CronTriggerTimetable("0 6 * * *", timezone="UTC"),
     max_active_runs=1,
     catchup=False,
