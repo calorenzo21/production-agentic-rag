@@ -1,12 +1,14 @@
 # Core dependencies needed for Airflow tasks
 httpx>=0.27.0
 sqlalchemy>=2.0.50,<3.0.0
+# Airflow's constraints pin Pydantic, and pyproject.toml pins the same version (ADR 0003).
 pydantic>=2.0.0,<3.0.0
 pydantic-settings>=2.0.0,<3.0.0
 python-dateutil>=2.8.0
+defusedxml>=0.7.1
 
-# PDF processing dependencies
-docling>=2.0.0
+# PDF processing dependencies. The same version as in pyproject.toml (ADR 0003).
+docling==2.147.0
 
 # Search engine dependencies
 opensearch-py>=2.4.0

@@ -8,6 +8,7 @@ import json
 import re
 import ssl
 import subprocess
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -67,6 +68,17 @@ def test_the_api_reaches_the_database_and_native_ollama() -> None:
     assert body["services"]["ollama"]["status"] == "healthy"
 
 
+def test_the_api_lists_the_papers_rag_db_holds() -> None:
+    response = httpx.get("http://localhost:8000/api/v1/papers/", params={"limit": 100}, timeout=10)
+
+    assert response.status_code == 200, response.text
+    held = set(superuser_sql("rag_db", "SELECT arxiv_id FROM papers").splitlines())
+    listed = response.json()
+    assert listed["total"] == len(held)
+    assert len(listed["papers"]) == min(len(held), 100)
+    assert {paper["arxiv_id"] for paper in listed["papers"]} <= held
+
+
 def test_the_api_does_not_run_as_root() -> None:
     assert compose("exec", "-T", "api", "id", "-u").stdout.strip() != "0"
 
@@ -109,12 +121,70 @@ def test_airflow_tasks_can_use_the_application_database_code() -> None:
     assert attempt.returncode == 0, attempt.stderr
 
 
-def test_airflow_and_the_api_share_the_sqlalchemy_version() -> None:
-    code = "import sqlalchemy; print(sqlalchemy.__version__)"
+def installed_version(service: str, package: str) -> str | None:
+    """The version of a package installed in a service's container, or None if it is not installed."""
+    code = (
+        "import importlib.metadata as metadata, sys\n"
+        "try: print(metadata.version(sys.argv[1]))\n"
+        "except metadata.PackageNotFoundError: pass"
+    )
+    return compose("exec", "-T", service, "python", "-c", code, package).stdout.strip() or None
 
-    versions = {service: compose("exec", "-T", service, "python", "-c", code).stdout.strip() for service in ("airflow", "api")}
 
+@pytest.mark.parametrize("package", ["sqlalchemy", "pydantic"])
+def test_airflow_and_the_api_share_the_version_of(package: str) -> None:
+    versions = {service: installed_version(service, package) for service in ("airflow", "api")}
+
+    assert versions["airflow"] is not None
     assert versions["airflow"] == versions["api"], versions
+
+
+def locked_version(package: str) -> str | None:
+    lock = tomllib.loads((REPOSITORY / "uv.lock").read_text())
+    return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
+
+
+def test_airflow_runs_the_docling_version_in_the_lock() -> None:
+    version = installed_version("airflow", "docling")
+
+    assert version is not None
+    assert version == locked_version("docling")
+
+
+def can_import(service: str, module: str) -> bool:
+    # Checks the import, not the distribution: the `docling` distribution only depends on `docling-slim`, which has the code.
+    code = "import importlib.util, sys; print(importlib.util.find_spec(sys.argv[1]) is not None)"
+    return compose("exec", "-T", service, "python", "-c", code, module).stdout.strip() == "True"
+
+
+def test_the_api_image_has_no_docling() -> None:
+    assert not can_import("api", "docling")
+
+
+def test_airflow_imports_every_dag() -> None:
+    # --local parses the DAGs now instead of reading what the DAG processor last recorded. The bundle puts the DAGs
+    # folder on the path, as the DAG processor does.
+    errors = compose(
+        "exec", "-T", "airflow", "airflow", "dags", "list-import-errors", "--local", "--bundle-name", "dags-folder", check=False
+    )
+
+    assert errors.returncode == 0, errors.stdout + errors.stderr
+
+
+def settings_in(service: str, prefix: str) -> dict[str, str]:
+    code = "import json, os, sys; print(json.dumps({n: v for n, v in os.environ.items() if n.startswith(sys.argv[1])}))"
+    return json.loads(compose("exec", "-T", service, "python", "-c", code, prefix).stdout)
+
+
+@pytest.mark.parametrize("prefix", ["ARXIV__", "PDF_PARSER__"])
+def test_airflow_alone_receives_the_ingestion_settings_from_env(prefix: str) -> None:
+    # A setting missing or empty in .env takes compose.yml's default, which is the value .env.example gives it.
+    example = dotenv_values(REPOSITORY / ".env.example")
+    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith(prefix)}
+
+    assert expected
+    assert settings_in("airflow", prefix) == expected
+    assert settings_in("api", prefix) == {}
 
 
 def test_the_week_1_dag_runs() -> None:

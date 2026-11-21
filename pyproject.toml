@@ -6,7 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi[standard]>=0.115.12",
     "uvicorn>=0.34.0",
-    "pydantic>=2.11.3",
+    # Airflow's constraints decide this version, as Airflow runs this code too (ADR 0003).
+    "pydantic==2.13.5",
     "pydantic-settings>=2.8.1",
     "sqlalchemy>=2.0.52",
     "psycopg2-binary>=2.9.10",
@@ -14,6 +15,8 @@ dependencies = [
     "opensearch-py>=3.0.0",
     "requests>=2.32.3",
     "httpx>=0.28.1",
+    "defusedxml>=0.7.1",
+    "python-dateutil>=2.9.0.post0",
 ]
 readme = "README.md"
 
@@ -21,6 +24,8 @@ readme = "README.md"
 dev = [
     "anyio[trio]>=4.9.0",
     "asgi-lifespan>=2.1.0",
+    # The Airflow image installs the same version (ADR 0003). The API image does not install Docling.
+    "docling==2.147.0",
     "jupyter>=1.1.1",
     "mypy>=1.15.0",
     "notebook>=7.4.4",
@@ -34,12 +39,27 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.11.5",
     "testcontainers>=4.10.0",
+    # Docling's, listed here because uv takes only direct dependencies from the CPU index below.
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
+    "types-defusedxml>=0.7.0.20260504",
+    "types-python-dateutil>=2.9.0.20250708",
 ]
+
+# Docling needs torch. The CPU build has no NVIDIA libraries, as in the Airflow image.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.ruff]
 line-length = 130
 exclude = ["notebooks/**", ".venv/**"]
-src = ["src", "tests"]
+src = ["src", "tests", "airflow/dags"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RUF", "ASYNC", "PT", "S"]
@@ -52,6 +72,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 env_files = ".env.test"
 testpaths = ["tests/unit", "tests/api"]
+# Airflow puts its DAGs folder on the path, so the DAGs' modules import as `arxiv_ingestion.*`.
+pythonpath = ["airflow/dags"]
 
 [tool.mypy]
 explicit_package_bases = true

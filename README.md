@@ -4,7 +4,7 @@ A research assistant that collects academic papers from arXiv and answers resear
 
 This repository follows the [Production Agentic RAG course](https://github.com/jamwithai/production-agentic-rag-course) Week by Week, and its structure stays faithful to the course except for the Deviations listed below ([ADR 0002](docs/adr/0002-follow-the-course-with-recorded-deviations.md)). The course's own README explains each Week.
 
-**Current Week: 1, Infrastructure.** The API's `/ask` endpoint returns mock data, as it does in the course at this Week.
+**Current Week: 2, Ingestion.** Every day, Airflow runs an Ingestion of the Papers that arXiv lists for the previous day in the configured Category, `cs.AI` by default, and stores each Paper in `rag_db`, with its Content when Docling can parse its PDF. The API lists the Papers the curator holds (`GET /api/v1/papers/`), returns one by its arXiv ID (`GET /api/v1/papers/{arxiv_id}`) and reports the health of the database and Ollama (`GET /api/v1/health`). It answers no questions yet, as the course removes `/ask` at this Week.
 
 ## Setup on a Mac
 
@@ -25,6 +25,8 @@ make start
 
 The first build takes several minutes, and the Airflow image is about 3.5 GB because the course installs Docling in it. `make status` shows when the services are healthy.
 
+Airflow creates the `arxiv_paper_ingestion` DAG paused: unpause it in Airflow's interface for the daily Ingestion to start. The first parse after the Airflow container is created downloads Docling's models from Hugging Face, which takes about 100 seconds.
+
 | Service | Address | Login |
 |---|---|---|
 | API | http://localhost:8000/docs | None |
@@ -41,11 +43,11 @@ The first build takes several minutes, and the Airflow image is about 3.5 GB bec
 | `make start`, `stop`, `restart`, `status`, `logs` | Manage the services |
 | `make health` | Asks every service for its health |
 | `make lint`, `format` | Ruff and mypy, with the course's configuration |
-| `make test`, `test-cov` | Tests that need no running stack. Week 1 has none yet, so pytest reports that no tests ran |
+| `make test`, `test-cov` | Tests against a disposable PostgreSQL, whose schema the Alembic migrations build. They need Docker running, but not the stack |
 | `make smoke` | Checks a running stack, including every security Deviation |
 | `make clean` | Removes this project's containers and volumes |
 
-CI runs lint only.
+CI runs lint and `make test`.
 
 ## Deviations
 
@@ -64,7 +66,10 @@ CI runs lint only.
 | Airflow metadata | Shared with the application in `rag_db` | Its own database and user. DAGs still reach `rag_db`, as ingestion needs it |
 | Airflow encryption keys | Not set | Generated Fernet, API secret and JWT keys |
 | Airflow version | 2.10.3, with SQLAlchemy 1.4 | 3.3.2, with the same SQLAlchemy version as the application ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
-| Airflow's torch | The default build, with NVIDIA libraries | The CPU build, as the containers have no GPU |
+| Ingestion DAG | Airflow 2's imports and operators, and the run's day taken from `ds` | Airflow 3's SDK, standard provider and a trigger timetable, which makes a run's logical date the day it runs. The run's day comes from the run, so a manual run without a logical date, which Airflow 3 allows and which has no `ds`, takes the day it runs |
+| Docling | In the application's dependencies, so the API image installs it too, and the API builds the arXiv client and the PDF parser at startup | In the Airflow image and in the `dev` dependency group, which the tests and CI use. The API image has none, and the API's startup builds neither the arXiv client nor the PDF parser, as no endpoint downloads or parses PDFs |
+| Docling and Pydantic versions | Resolved separately for Airflow and for the application | The same version of each in the Airflow image and in `uv.lock`. Airflow's constraints decide Pydantic's, and `make smoke` checks both ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
+| Docling's torch | The default build, with NVIDIA libraries | The CPU build, in Airflow and in the `dev` group, as neither the containers nor CI has a GPU |
 | Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
 | OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
 | OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |
@@ -76,8 +81,11 @@ CI runs lint only.
 | Topic | Course | This repository |
 |---|---|---|
 | Notebooks | One per Week | Not included. The course's notebooks are read in the course's repository |
+| Tests | None | `make test`, for this repository's corrections and Deviations |
+| arXiv in the tests | None | The arXiv client takes an optional HTTP transport, through which the tests fake arXiv. It times the wait between requests on the event loop's clock, which the tests make virtual, so they check the rate limit without waiting |
+| Docling in the tests | None | The PDF parser takes an optional converter, through which the tests fake Docling. The page and size limits stay real |
 | Infrastructure tests | None | `make smoke` |
-| CI | None | Lint |
+| CI | None | Lint and `make test` |
 | Commit hook | None | Rejects tool attribution in commit messages |
 | Ruff | Import order only | Also errors, bugs, simplifications and security rules |
 | mypy | Runs with `ignore_errors` | `strict`, in CI and in the pre-commit hook |
@@ -90,18 +98,32 @@ CI runs lint only.
 | `Makefile` | `make clean` prunes Docker for every project on the machine | Removes this project's containers and volumes only |
 | `Dockerfile` | Needs BuildKit for `--mount` options it does not need, so it fails to build on Colima's default builder | Options removed |
 | `compose.yml` | Mounts `airflow/plugins`, which is not in the repository | Mount removed |
-| `compose.yml` | `PYTHONPATH` makes `src.*` impossible to import from a DAG | Points to the parent of `src` |
+| `compose.yml` | `PYTHONPATH` makes `src.*` impossible to import from a DAG | Points to the parent of `src`, so the DAG's tasks no longer insert it into `sys.path` |
 | `compose.yml` | The PostgreSQL health check passes during first-time setup, before the server is really up | Checks over TCP |
 | `compose.yml` | The Dashboards health check needs a login once security is on | Checks the login page |
 | `airflow/init-db.sql` | Invalid SQL for PostgreSQL, and nothing uses it | Removed |
 | `airflow/entrypoint.sh` | Uses the deprecated `airflow db init`, and `pkill`, which the image does not have | Uses `airflow db migrate`, and removes only the PID files |
 | `airflow/requirements-airflow.txt` | Lacks `pydantic-settings`, so a DAG cannot import `src.config` | Added |
+| `airflow/dags/arxiv_paper_ingestion.py` | Runs Monday to Friday, so the Papers submitted on a Friday or a Saturday are never ingested | Runs every day at the course's hour, and each run ingests the day before it. `catchup` stays off, and missed days are recovered with Airflow 3's backfill, whose run of a day also ingests the day before. Every day now has its run, but so far the runs collect no more Papers than the course's schedule did: arXiv lists a day's Papers only once it announces them, at 20:00 ET from Sunday to Thursday, each time up to 14:00 ET that day. So the runs of Saturday to Monday find none of Friday's to Sunday's Papers, and a weekday run never sees the Papers of its day submitted after 14:00 ET. Until [#31](https://github.com/calorenzo21/production-agentic-rag/issues/31), a backfill after the announcement collects them |
+| `airflow/dags/arxiv_paper_ingestion.py`, `airflow/dags/arxiv_ingestion/tasks.py` | The cleanup deletes PDFs older than 30 days from `/tmp`, but the arXiv client downloads them into `ARXIV__PDF_CACHE_DIR`, so that folder grows with every run | A Python task deletes them from the folder in the arXiv client's setting, resolved against the same working directory as the downloads. Newer PDFs stay, as the client reuses them instead of downloading them again |
+| `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
-| `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
+| `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs, in Week 1's code and again in Week 2's | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
+| `src/config.py` | The nested arXiv and PDF parser settings also read unprefixed variables, such as `MAX_RESULTS`, `BASE_URL` and `MAX_PAGES` | They read `ARXIV__*` and `PDF_PARSER__*` variables only |
+| `src/config.py` | Week 2 types `OLLAMA_MODELS` as a list, which pydantic-settings reads as JSON, so a value such as `.env.example`'s `llama3.2:1b` stops the settings from loading | Keeps Week 1's type, which also takes a comma-separated list |
 | `src/db/interfaces/base.py` | `BaseRepository` is a contract that no repository follows, and nothing uses it | Removed |
 | `src/repositories/paper.py` | `upsert` looks for the paper and then inserts it, so concurrent upserts of the same paper fail on its unique `arxiv_id` | One `INSERT ... ON CONFLICT DO UPDATE` |
+| `src/repositories/paper.py` | When a Paper that has Content fails to parse, the Ingestion keeps its stale Content but marks it as not processed and overwrites its parser metadata | An upsert without Content updates only the metadata, so the Content and the processed state stay as they were. It is still one `INSERT ... ON CONFLICT DO UPDATE` |
+| `src/services/arxiv/client.py` | Parses arXiv's XML with the standard library, which expands the entities a response declares | Parses it with `defusedxml`, which refuses them |
+| `src/services/arxiv/client.py` | Each PDF download waits the rate limit delay on its own, ignoring the previous request, so concurrent downloads reach arXiv at the same moment, breaking its limit of one request every 3 seconds | Every request to arXiv, whether an API query or an attempt at a PDF download, books its start at least `ARXIV__RATE_LIMIT_DELAY` after the previous one's, so concurrent downloads come one delay apart |
+| `src/services/arxiv/client.py`, `src/services/arxiv/factory.py` | Downloads a PDF whole, however large, before the parser refuses it for exceeding the size limit | The download stops as soon as the PDF exceeds `PDF_PARSER__MAX_FILE_SIZE_MB`, without retrying, and leaves no file. The Paper is held without its Content, and its PDF counts as not downloaded |
+| `src/services/arxiv/client.py` | A failed download leaves its partial PDF in the cache, as the cleanup after the retries never runs, so every later Ingestion reuses the corrupt file | Each attempt downloads under a temporary name, which becomes the PDF's only once complete, and a failed attempt removes it. The next Ingestion downloads the PDF again |
+| `src/services/arxiv/client.py` | PDF downloads time out after a hard-coded 30 seconds, ignoring `ARXIV__TIMEOUT_SECONDS` | They time out after `ARXIV__TIMEOUT_SECONDS`, as the API queries do |
+| `src/services/ollama/client.py` | Times out after a hard-coded 30 seconds, ignoring `OLLAMA_TIMEOUT` | Times out after `OLLAMA_TIMEOUT`. Its health check too, so `/api/v1/health` waits that long for an Ollama that accepts connections but does not answer |
+| `src/services/metadata_fetcher.py` | A Paper that fails to store aborts the transaction, so every Paper after it in the batch fails too | Rolls back after the failure, so the rest of the batch is stored |
+| `src/services/pdf_parser/parser.py`, `src/services/metadata_fetcher.py` | The fetcher's metadata-only path never runs: the parser service raises for a PDF over the page or size limit, which Docling skips, and a failed parse aborts its Paper's pipeline. Either way the Paper is held without Content, but its PDF counts as not downloaded | The parser service returns no Content for a PDF over the limits, and the fetcher sends a failed parse to the metadata-only path. The Paper is held without its Content, and its PDF counts as downloaded but not parsed. A PDF over the size limit now stops during its download instead, before the parser sees it (see `src/services/arxiv/client.py`) |
 
 ## Licence
 

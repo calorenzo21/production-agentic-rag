@@ -2,7 +2,8 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from ..dependencies import DatabaseDep, SettingsDep
-from ..schemas.health import HealthResponse, ServiceStatus
+from ..exceptions import OllamaConnectionError, OllamaException, OllamaTimeoutError
+from ..schemas.api.health import HealthResponse, ServiceStatus
 from ..services.ollama import OllamaClient
 
 router = APIRouter()
@@ -59,15 +60,24 @@ async def health_check(settings: SettingsDep, database: DatabaseDep) -> HealthRe
         services["database"] = ServiceStatus(status="unhealthy", message=f"Connection failed: {e!s}")
         overall_status = "degraded"
 
-    # Test Ollama service connectivity
+    # Test Ollama service connectivity (Week 1 notebook requirement)
     try:
         ollama_client = OllamaClient(settings)
         ollama_health = await ollama_client.health_check()
         services["ollama"] = ServiceStatus(status=ollama_health["status"], message=ollama_health["message"])
         if ollama_health["status"] != "healthy":
             overall_status = "degraded"
+    except OllamaConnectionError as e:
+        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Cannot connect to Ollama: {e!s}")
+        overall_status = "degraded"
+    except OllamaTimeoutError as e:
+        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama timeout: {e!s}")
+        overall_status = "degraded"
+    except OllamaException as e:
+        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama error: {e!s}")
+        overall_status = "degraded"
     except Exception as e:
-        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Ollama check failed: {e!s}")
+        services["ollama"] = ServiceStatus(status="unhealthy", message=f"Unexpected Ollama error: {e!s}")
         overall_status = "degraded"
 
     return HealthResponse(

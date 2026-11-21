@@ -146,6 +146,18 @@ services:
       AIRFLOW__API__WORKERS: "1"
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?run make setup}
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?run make setup}@postgres:5432/airflow
+      # The arXiv client's settings. Only the Ingestion uses them, and it runs in Airflow.
+      ARXIV__BASE_URL: ${ARXIV__BASE_URL:-https://export.arxiv.org/api/query}
+      ARXIV__PDF_CACHE_DIR: ${ARXIV__PDF_CACHE_DIR:-./data/arxiv_pdfs}
+      ARXIV__RATE_LIMIT_DELAY: ${ARXIV__RATE_LIMIT_DELAY:-3.0}
+      ARXIV__TIMEOUT_SECONDS: ${ARXIV__TIMEOUT_SECONDS:-30}
+      ARXIV__MAX_RESULTS: ${ARXIV__MAX_RESULTS:-100}
+      ARXIV__SEARCH_CATEGORY: ${ARXIV__SEARCH_CATEGORY:-cs.AI}
+      # The PDF parser's settings, which only the Ingestion uses too.
+      PDF_PARSER__MAX_PAGES: ${PDF_PARSER__MAX_PAGES:-20}
+      PDF_PARSER__MAX_FILE_SIZE_MB: ${PDF_PARSER__MAX_FILE_SIZE_MB:-20}
+      PDF_PARSER__DO_OCR: ${PDF_PARSER__DO_OCR:-false}
+      PDF_PARSER__DO_TABLE_STRUCTURE: ${PDF_PARSER__DO_TABLE_STRUCTURE:-true}
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
