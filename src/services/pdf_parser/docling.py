@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pypdfium2 as pdfium  # type: ignore[import-untyped]  # It ships no type i
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.utils.locks import pypdfium2_lock
 from src.exceptions import PDFParsingException, PDFValidationError
 from src.schemas.pdf_parser.models import PaperSection, ParserType, PdfContent
 
@@ -86,9 +88,11 @@ class DoclingParser:
                     raise PDFValidationError(f"File does not have PDF header: {pdf_path}")
 
             # Check page count limit
-            pdf_doc = pdfium.PdfDocument(str(pdf_path))
-            actual_pages = len(pdf_doc)
-            pdf_doc.close()
+            # Parses run in worker threads, and pdfium allows one thread at a time, so this takes the lock Docling takes.
+            with pypdfium2_lock:
+                pdf_doc = pdfium.PdfDocument(str(pdf_path))
+                actual_pages = len(pdf_doc)
+                pdf_doc.close()
 
             if actual_pages > self.max_pages:
                 logger.warning(
@@ -110,12 +114,18 @@ class DoclingParser:
         Parse PDF using Docling as fallback parser.
         Limited to 20 pages to avoid memory issues with large papers.
 
+        Docling parses synchronously, for seconds or minutes, so the parse runs in a worker thread and the event loop
+        goes on meanwhile.
+
         Args:
             pdf_path: Path to PDF file
 
         Returns:
             PdfContent object or None if parsing failed
         """
+        return await asyncio.to_thread(self._parse_pdf, pdf_path)
+
+    def _parse_pdf(self, pdf_path: Path) -> PdfContent | None:
         try:
             # Validate PDF first (includes size and page limits)
             self._validate_pdf(pdf_path)
