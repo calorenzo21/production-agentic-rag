@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from src.models.paper import Paper
-from src.schemas.paper import PaperBase, PaperCreate
+from src.schemas.arxiv.paper import PaperBase, PaperCreate
 
 
 class PaperRepository:

@@ -73,9 +73,20 @@ class PipelineException(MetadataFetchingException):
     """Exception raised during pipeline execution."""
 
 
-# Week 6+: LLM exceptions (placeholders for Week 1)
 class LLMException(Exception):
     """Base exception for LLM-related errors."""
+
+
+class OllamaException(LLMException):
+    """Exception raised for Ollama service errors."""
+
+
+class OllamaConnectionError(OllamaException):
+    """Exception raised when cannot connect to Ollama service."""
+
+
+class OllamaTimeoutError(OllamaException):
+    """Exception raised when Ollama service times out."""
 
 
 # General application exceptions

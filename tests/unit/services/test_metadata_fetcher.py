@@ -23,7 +23,7 @@ from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
 from src.exceptions import PipelineException
 from src.repositories.paper import PaperRepository
-from src.schemas.paper import PaperBase, PaperCreate
+from src.schemas.arxiv.paper import PaperBase, PaperCreate
 from src.services.arxiv.client import ArxivClient
 from src.services.metadata_fetcher import make_metadata_fetcher
 from src.services.pdf_parser.parser import PDFParserService

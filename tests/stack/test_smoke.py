@@ -68,6 +68,17 @@ def test_the_api_reaches_the_database_and_native_ollama() -> None:
     assert body["services"]["ollama"]["status"] == "healthy"
 
 
+def test_the_api_lists_the_papers_rag_db_holds() -> None:
+    response = httpx.get("http://localhost:8000/api/v1/papers/", params={"limit": 100}, timeout=10)
+
+    assert response.status_code == 200, response.text
+    held = set(superuser_sql("rag_db", "SELECT arxiv_id FROM papers").splitlines())
+    listed = response.json()
+    assert listed["total"] == len(held)
+    assert len(listed["papers"]) == min(len(held), 100)
+    assert {paper["arxiv_id"] for paper in listed["papers"]} <= held
+
+
 def test_the_api_does_not_run_as_root() -> None:
     assert compose("exec", "-T", "api", "id", "-u").stdout.strip() != "0"
 

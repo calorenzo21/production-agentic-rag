@@ -2,7 +2,7 @@ from datetime import datetime
 
 from src.db.interfaces.base import BaseDatabase
 from src.repositories.paper import PaperRepository
-from src.schemas.paper import PaperCreate
+from src.schemas.arxiv.paper import PaperCreate
 
 FIRST_METADATA = PaperCreate(
     arxiv_id="2411.00001v1",

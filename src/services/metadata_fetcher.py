@@ -8,8 +8,7 @@ from dateutil import parser as date_parser
 from sqlalchemy.orm import Session
 from src.exceptions import MetadataFetchingException, PDFParsingException, PipelineException
 from src.repositories.paper import PaperRepository
-from src.schemas.arxiv.paper import ArxivPaper
-from src.schemas.paper import PaperCreate
+from src.schemas.arxiv.paper import ArxivPaper, PaperCreate
 from src.schemas.pdf_parser.models import ArxivMetadata, ParsedPaper, PdfContent
 from src.services.arxiv.client import ArxivClient
 from src.services.pdf_parser.parser import PDFParserService

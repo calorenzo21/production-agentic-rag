@@ -4,7 +4,7 @@ A research assistant that collects academic papers from arXiv and answers resear
 
 This repository follows the [Production Agentic RAG course](https://github.com/jamwithai/production-agentic-rag-course) Week by Week, and its structure stays faithful to the course except for the Deviations listed below ([ADR 0002](docs/adr/0002-follow-the-course-with-recorded-deviations.md)). The course's own README explains each Week.
 
-**Current Week: 1, Infrastructure.** The API's `/ask` endpoint returns mock data, as it does in the course at this Week.
+**Current Week: 1, Infrastructure.**
 
 ## Setup on a Mac
 
@@ -65,7 +65,7 @@ CI runs lint and `make test`.
 | Airflow encryption keys | Not set | Generated Fernet, API secret and JWT keys |
 | Airflow version | 2.10.3, with SQLAlchemy 1.4 | 3.3.2, with the same SQLAlchemy version as the application ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
 | Ingestion DAG | Airflow 2's imports and operators, and the run's day taken from `ds` | Airflow 3's SDK, standard provider and a trigger timetable, which makes a run's logical date the day it runs. The run's day comes from the run, so a manual run without a logical date, which Airflow 3 allows and which has no `ds`, takes the day it runs |
-| Docling | In the application's dependencies, so the API image installs it too | In the Airflow image and in the `dev` dependency group, which the tests and CI use. The API image has none, as the API never parses PDFs |
+| Docling | In the application's dependencies, so the API image installs it too, and the API builds the arXiv client and the PDF parser at startup | In the Airflow image and in the `dev` dependency group, which the tests and CI use. The API image has none, and the API's startup builds neither the arXiv client nor the PDF parser, as no endpoint downloads or parses PDFs |
 | Docling and Pydantic versions | Resolved separately for Airflow and for the application | The same version of each in the Airflow image and in `uv.lock`. Airflow's constraints decide Pydantic's, and `make smoke` checks both ([ADR 0003](docs/adr/0003-airflow-3-to-share-sqlalchemy-2.md)) |
 | Docling's torch | The default build, with NVIDIA libraries | The CPU build, in Airflow and in the `dev` group, as neither the containers nor CI has a GPU |
 | Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
@@ -107,9 +107,10 @@ CI runs lint and `make test`.
 | `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
-| `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs | Replaced with their current forms |
+| `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs, in Week 1's code and again in Week 2's | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |
 | `src/config.py` | The nested arXiv and PDF parser settings also read unprefixed variables, such as `MAX_RESULTS`, `BASE_URL` and `MAX_PAGES` | They read `ARXIV__*` and `PDF_PARSER__*` variables only |
+| `src/config.py` | Week 2 types `OLLAMA_MODELS` as a list, which pydantic-settings reads as JSON, so a value such as `.env.example`'s `llama3.2:1b` stops the settings from loading | Keeps Week 1's type, which also takes a comma-separated list |
 | `src/db/interfaces/base.py` | `BaseRepository` is a contract that no repository follows, and nothing uses it | Removed |
 | `src/repositories/paper.py` | `upsert` looks for the paper and then inserts it, so concurrent upserts of the same paper fail on its unique `arxiv_id` | One `INSERT ... ON CONFLICT DO UPDATE` |
 | `src/repositories/paper.py` | When a Paper that has Content fails to parse, the Ingestion keeps its stale Content but marks it as not processed and overwrites its parser metadata | An upsert without Content updates only the metadata, so the Content and the processed state stay as they were. It is still one `INSERT ... ON CONFLICT DO UPDATE` |
@@ -118,6 +119,7 @@ CI runs lint and `make test`.
 | `src/services/arxiv/client.py`, `src/services/arxiv/factory.py` | Downloads a PDF whole, however large, before the parser refuses it for exceeding the size limit | The download stops as soon as the PDF exceeds `PDF_PARSER__MAX_FILE_SIZE_MB`, without retrying, and leaves no file. The Paper is held without its Content, and its PDF counts as not downloaded |
 | `src/services/arxiv/client.py` | A failed download leaves its partial PDF in the cache, as the cleanup after the retries never runs, so every later Ingestion reuses the corrupt file | Each attempt downloads under a temporary name, which becomes the PDF's only once complete, and a failed attempt removes it. The next Ingestion downloads the PDF again |
 | `src/services/arxiv/client.py` | PDF downloads time out after a hard-coded 30 seconds, ignoring `ARXIV__TIMEOUT_SECONDS` | They time out after `ARXIV__TIMEOUT_SECONDS`, as the API queries do |
+| `src/services/ollama/client.py` | Times out after a hard-coded 30 seconds, ignoring `OLLAMA_TIMEOUT` | Times out after `OLLAMA_TIMEOUT`. Its health check too, so `/api/v1/health` waits that long for an Ollama that accepts connections but does not answer |
 | `src/services/metadata_fetcher.py` | A Paper that fails to store aborts the transaction, so every Paper after it in the batch fails too | Rolls back after the failure, so the rest of the batch is stored |
 | `src/services/pdf_parser/parser.py`, `src/services/metadata_fetcher.py` | The fetcher's metadata-only path never runs: the parser service raises for a PDF over the page or size limit, which Docling skips, and a failed parse aborts its Paper's pipeline. Either way the Paper is held without Content, but its PDF counts as not downloaded | The parser service returns no Content for a PDF over the limits, and the fetcher sends a failed parse to the metadata-only path. The Paper is held without its Content, and its PDF counts as downloaded but not parsed. A PDF over the size limit now stops during its download instead, before the parser sees it (see `src/services/arxiv/client.py`) |
 

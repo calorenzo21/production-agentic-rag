@@ -67,11 +67,12 @@ class Settings(DefaultSettings):
     opensearch_password: str = ""
     opensearch_ca_certs: str = "secrets/opensearch/ca.crt"
 
-    # Ollama configuration
+    # Ollama configuration (used in Week 1 notebook)
     ollama_host: str = "http://localhost:11434"
-    ollama_models: str | list[str] = Field(default=["gpt-oss:20b", "llama3.2:1b"])
+    # The course's Week 2 types it list[str], which pydantic-settings reads as JSON, so OLLAMA_MODELS=llama3.2:1b fails.
+    ollama_models: str | list[str] = Field(default=["llama3.2:1b"])
     ollama_default_model: str = "llama3.2:1b"
-    ollama_timeout: int = 300  # 5 minutes for large model operations
+    ollama_timeout: int = 300  # 5 minutes for LLM operations
 
     # arXiv settings
     arxiv: ArxivSettings = Field(default_factory=ArxivSettings)
