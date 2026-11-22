@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Path, Query
 from src.dependencies import SessionDep
 from src.repositories.paper import PaperRepository
-from src.schemas.arxiv.paper import PaperResponse, PaperSearchResponse
+from src.schemas.arxiv.paper import PaperListItem, PaperResponse, PaperSearchResponse
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -19,7 +19,7 @@ def list_papers(
     # Get total count for pagination info
     total = paper_repo.get_count()
 
-    return PaperSearchResponse(papers=[PaperResponse.model_validate(paper) for paper in papers], total=total)
+    return PaperSearchResponse(papers=[PaperListItem.model_validate(paper) for paper in papers], total=total)
 
 
 @router.get("/{arxiv_id}", response_model=PaperResponse)

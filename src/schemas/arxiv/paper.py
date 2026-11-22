@@ -43,15 +43,10 @@ class PaperCreate(PaperBase):
     pdf_processing_date: datetime | None = Field(default=None, description="When PDF was processed")
 
 
-class PaperResponse(PaperBase):
-    """Schema for paper API responses with all content."""
+class PaperListItem(PaperBase):
+    """A Paper as the list returns it: its metadata, without its Content, which can be many times larger."""
 
     id: UUID
-
-    # Parsed PDF content (optional fields)
-    raw_text: str | None = Field(default=None, description="Full raw text extracted from PDF")
-    sections: list[dict[str, Any]] | None = Field(default=None, description="List of sections with titles and content")
-    references: list[dict[str, Any]] | None = Field(default=None, description="List of references if extracted")
 
     # PDF processing metadata
     parser_used: str | None = Field(default=None, description="Which parser was used")
@@ -66,6 +61,15 @@ class PaperResponse(PaperBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaperResponse(PaperListItem):
+    """Schema for paper API responses with all content."""
+
+    # Parsed PDF content (optional fields)
+    raw_text: str | None = Field(default=None, description="Full raw text extracted from PDF")
+    sections: list[dict[str, Any]] | None = Field(default=None, description="List of sections with titles and content")
+    references: list[dict[str, Any]] | None = Field(default=None, description="List of references if extracted")
+
+
 class PaperSearchResponse(BaseModel):
-    papers: list[PaperResponse]
+    papers: list[PaperListItem]
     total: int
