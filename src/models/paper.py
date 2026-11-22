@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, String, Text, false
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, false
 from sqlalchemy.dialects.postgresql import UUID
 from src.models.base import Base
 
@@ -11,7 +11,9 @@ class Paper(Base):
 
     # Core arXiv metadata
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Without its Version, which `version` holds, so that every Version of a Paper is the same Paper (ADR 0004).
     arxiv_id = Column(String, unique=True, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
     title = Column(String, nullable=False)
     authors = Column(JSON, nullable=False)  # List of author names
     abstract = Column(Text, nullable=False)

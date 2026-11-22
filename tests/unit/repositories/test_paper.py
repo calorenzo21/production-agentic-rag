@@ -5,7 +5,8 @@ from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import PaperCreate
 
 FIRST_METADATA = PaperCreate(
-    arxiv_id="2411.00001v1",
+    arxiv_id="2411.00001",
+    version=1,
     title="A first title",
     authors=["Ada Lovelace"],
     abstract="The abstract arXiv listed first.",
@@ -14,13 +15,14 @@ FIRST_METADATA = PaperCreate(
     pdf_url="https://arxiv.org/pdf/2411.00001v1",
 )
 SECOND_METADATA = PaperCreate(
-    arxiv_id="2411.00001v1",
+    arxiv_id="2411.00001",
+    version=2,
     title="A corrected title",
     authors=["Ada Lovelace", "Charles Babbage"],
     abstract="The abstract arXiv listed later.",
     categories=["cs.AI", "cs.LG"],
     published_date=datetime(2024, 11, 2, 10, 45),
-    pdf_url="https://arxiv.org/pdf/2411.00001v1.pdf",
+    pdf_url="https://arxiv.org/pdf/2411.00001v2",
 )
 
 

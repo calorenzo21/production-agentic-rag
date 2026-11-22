@@ -8,7 +8,7 @@ from dateutil import parser as date_parser
 from sqlalchemy.orm import Session
 from src.exceptions import MetadataFetchingException, PDFParsingException, PipelineException
 from src.repositories.paper import PaperRepository
-from src.schemas.arxiv.paper import ArxivPaper, PaperCreate
+from src.schemas.arxiv.paper import ArxivPaper, PaperCreate, split_version
 from src.schemas.pdf_parser.models import ArxivMetadata, ParsedPaper, PdfContent
 from src.services.arxiv.client import ArxivClient
 from src.services.pdf_parser.parser import PDFParserService
@@ -339,9 +339,13 @@ class MetadataFetcher:
                 # Get parsed content if available
                 parsed_paper = parsed_papers.get(paper.arxiv_id)
 
+                # Every Version of a Paper is held as the same Paper, at the latest Version ingested (ADR 0004).
+                arxiv_id, version = split_version(paper.arxiv_id)
+
                 # Base paper data
                 paper_data: dict[str, Any] = {
-                    "arxiv_id": paper.arxiv_id,
+                    "arxiv_id": arxiv_id,
+                    "version": version,
                     "title": paper.title,
                     "authors": paper.authors,
                     "abstract": paper.abstract,

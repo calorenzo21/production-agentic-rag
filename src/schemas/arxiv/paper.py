@@ -1,13 +1,26 @@
+import re
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# An arXiv ID can end with a Version, such as v2. The rest identifies the Paper, in either of arXiv's ID formats.
+VERSIONED_ARXIV_ID = re.compile(r"(?P<paper>.+?)v(?P<version>\d+)")
+
+
+def split_version(arxiv_id: str) -> tuple[str, int | None]:
+    """A Paper's arXiv ID without its Version, and the Version, None for an ID without one."""
+    match = VERSIONED_ARXIV_ID.fullmatch(arxiv_id)
+    if match is None:
+        return arxiv_id, None
+    return match["paper"], int(match["version"])
+
 
 class ArxivPaper(BaseModel):
     """Schema for arXiv API response data."""
 
+    # With its Version, as arXiv lists it, so that the PDF downloaded is that Version's.
     arxiv_id: str = Field(..., description="arXiv paper ID")
     title: str = Field(..., description="Paper title")
     authors: list[str] = Field(..., description="List of author names")
@@ -19,7 +32,8 @@ class ArxivPaper(BaseModel):
 
 class PaperBase(BaseModel):
     # Core arXiv metadata
-    arxiv_id: str = Field(..., description="arXiv paper ID")
+    arxiv_id: str = Field(..., description="arXiv paper ID, without its Version, such as 2411.00001")
+    version: int = Field(..., description="The Version the curator holds, such as 2 for v2")
     title: str = Field(..., description="Paper title")
     authors: list[str] = Field(..., description="List of author names")
     abstract: str = Field(..., description="Paper abstract")

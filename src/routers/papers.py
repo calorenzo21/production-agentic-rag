@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Path, Query
 from src.dependencies import SessionDep
 from src.repositories.paper import PaperRepository
-from src.schemas.arxiv.paper import PaperListItem, PaperResponse, PaperSearchResponse
+from src.schemas.arxiv.paper import PaperListItem, PaperResponse, PaperSearchResponse, split_version
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -31,7 +31,9 @@ def get_paper_details(
 ) -> PaperResponse:
     """Get details of a specific paper by arXiv ID."""
     paper_repo = PaperRepository(db)
-    paper = paper_repo.get_by_arxiv_id(arxiv_id)
+    # Any Version finds the Paper, which the curator holds at the latest Version it has ingested (ADR 0004).
+    without_version, _ = split_version(arxiv_id)
+    paper = paper_repo.get_by_arxiv_id(without_version)
 
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
