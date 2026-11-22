@@ -255,9 +255,9 @@ def pdf_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def paper_postgresql_refuses(database: BaseDatabase) -> Iterator[str]:
-    """The arXiv ID of a Paper that PostgreSQL refuses to store."""
+    """The arXiv ID, as arXiv lists it, of a Paper that PostgreSQL refuses to store."""
     with database.get_session() as session:
-        session.execute(text("ALTER TABLE papers ADD CONSTRAINT refuses_one_paper CHECK (arxiv_id <> '2411.00002v1')"))
+        session.execute(text("ALTER TABLE papers ADD CONSTRAINT refuses_one_paper CHECK (arxiv_id <> '2411.00002')"))
         session.commit()
     yield "2411.00002v1"
     with database.get_session() as session:
@@ -333,7 +333,8 @@ async def test_ingesting_a_day_stores_the_metadata_of_its_papers(
 
     assert held_metadata(database) == [
         PaperBase(
-            arxiv_id="2411.00002v2",
+            arxiv_id="2411.00002",
+            version=2,
             title="A later Paper",
             authors=["Grace Hopper", "Alan Turing"],
             abstract="The abstract of the later Paper.",
@@ -342,7 +343,8 @@ async def test_ingesting_a_day_stores_the_metadata_of_its_papers(
             pdf_url="https://arxiv.org/pdf/2411.00002v2",
         ),
         PaperBase(
-            arxiv_id="2411.00001v1",
+            arxiv_id="2411.00001",
+            version=1,
             title="An earlier Paper",
             authors=["Ada Lovelace"],
             abstract="The abstract of the earlier Paper.",
@@ -363,6 +365,46 @@ async def test_ingesting_a_day_again_holds_the_same_papers_without_duplicates(
     await ingest(DAY, arxiv, docling, database)
 
     assert held_metadata(database) == held_after_the_first_ingestion
+
+
+async def test_ingesting_a_day_again_after_a_paper_gains_a_version_holds_it_once_at_that_version_with_its_content(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase
+) -> None:
+    arxiv.lists(atom_entry("2411.00001v1", title="A first title"))
+    await ingest(DAY, arxiv, docling, database)
+    # arXiv lists a Paper at its latest Version.
+    arxiv.lists(atom_entry("2411.00001v2", title="A revised title"))
+
+    await ingest(DAY, arxiv, docling, database)
+
+    papers = held_papers(database)
+    assert [(paper.arxiv_id, paper.title) for paper in papers] == [("2411.00001", "A revised title")]
+    [paper] = papers
+    assert paper.version == 2
+    assert content(paper) == (
+        "Paper 2411.00001v2\n\nIntroduction\n\nThe Content of 2411.00001v2.",
+        [{"title": "Introduction", "content": "The Content of 2411.00001v2."}],
+        [],
+    )
+
+
+async def test_a_new_version_that_fails_to_parse_moves_the_paper_to_it_and_keeps_the_previous_versions_content(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase
+) -> None:
+    arxiv.lists(atom_entry("2411.00001v1", title="A first title"))
+    await ingest(DAY, arxiv, docling, database)
+    arxiv.lists(atom_entry("2411.00001v2", title="A revised title"))
+    docling.fails_on("2411.00001v2")
+
+    await ingest(DAY, arxiv, docling, database)
+
+    [paper] = held_papers(database)
+    assert (paper.arxiv_id, paper.version, paper.title, paper.pdf_processed) == ("2411.00001", 2, "A revised title", True)
+    assert content(paper) == (
+        "Paper 2411.00001v1\n\nIntroduction\n\nThe Content of 2411.00001v1.",
+        [{"title": "Introduction", "content": "The Content of 2411.00001v1."}],
+        [],
+    )
 
 
 async def test_the_query_asks_arxiv_for_arxiv_max_results_papers_newest_first(
@@ -413,7 +455,7 @@ async def test_a_paper_that_fails_to_store_leaves_the_days_other_papers_stored(
 
     await ingest(DAY, arxiv, docling, database)
 
-    assert [paper.arxiv_id for paper in held_papers(database)] == ["2411.00003v1", "2411.00001v1"]
+    assert [paper.arxiv_id for paper in held_papers(database)] == ["2411.00003", "2411.00001"]
 
 
 async def test_a_parsed_paper_is_stored_with_its_content_and_marked_as_processed(
@@ -442,8 +484,8 @@ async def test_a_paper_whose_pdf_fails_to_parse_is_stored_without_content(
     results = await ingest(DAY, arxiv, docling, database)
 
     failed, parsed = held_papers(database)
-    assert (failed.arxiv_id, content(failed), failed.pdf_processed) == ("2411.00002v1", (None, None, None), False)
-    assert (parsed.arxiv_id, parsed.pdf_processed) == ("2411.00001v1", True)
+    assert (failed.arxiv_id, content(failed), failed.pdf_processed) == ("2411.00002", (None, None, None), False)
+    assert (parsed.arxiv_id, parsed.pdf_processed) == ("2411.00001", True)
     assert (results["pdfs_downloaded"], results["pdfs_parsed"]) == (2, 1)
 
 
