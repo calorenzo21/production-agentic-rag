@@ -3,6 +3,7 @@
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from src.db.interfaces.base import BaseDatabase
 from src.main import app
 
 
@@ -13,8 +14,8 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def client():
-    """HTTP client for API testing."""
+async def client(database: BaseDatabase):
+    """HTTP client for API testing. The API connects at startup, so it starts once the disposable PostgreSQL is set up."""
     async with (
         LifespanManager(app) as manager,
         AsyncClient(transport=ASGITransport(app=manager.app), base_url="http://test") as client,
