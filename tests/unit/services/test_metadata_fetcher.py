@@ -7,6 +7,7 @@ import asyncio
 import io
 import itertools
 import selectors
+import time
 from collections import Counter
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import datetime
@@ -91,6 +92,14 @@ def pdf(pages: int = 1) -> bytes:
     return buffer.getvalue()
 
 
+# Made once, before any Ingestion: pdfium allows one thread at a time, and the parser calls it while arXiv sends PDFs.
+ONE_PAGE_PDF = pdf()
+
+# The longest, in real time, that a parse the test makes last holds its thread. Only a parse that blocks the event loop
+# reaches it, as nothing can then send the PDFs it waits for.
+PARSE_TIME_LIMIT = 5.0
+
+
 class FakeArxiv:
     """
     arXiv over HTTP. Its API answers every query with one feed and keeps the queries it received. Its PDF links stream
@@ -105,6 +114,8 @@ class FakeArxiv:
         self.dropping: set[str] = set()
         # The arXiv ID of the Paper whose PDF each download asked for.
         self.downloads: list[str] = []
+        # The arXiv ID of each Paper whose PDF it sent whole, in the order it finished sending them.
+        self.pdfs_sent: list[str] = []
         # How many bytes of each Paper's PDF it sent, over every download.
         self.bytes_sent: Counter[str] = Counter()
         # When each request arrived, on the event loop's clock, whether it queried the API or downloaded a PDF.
@@ -130,7 +141,7 @@ class FakeArxiv:
         return httpx.Response(200, text=self.feed)
 
     async def _stream_pdf(self, arxiv_id: str, request: httpx.Request) -> AsyncIterator[bytes]:
-        pdf_bytes = self.pdfs.get(arxiv_id, pdf())
+        pdf_bytes = self.pdfs.get(arxiv_id, ONE_PAGE_PDF)
         if arxiv_id in self.dropping:
             yield pdf_bytes[: len(pdf_bytes) // 2]
             raise httpx.ReadError("The connection dropped", request=request)
@@ -138,6 +149,7 @@ class FakeArxiv:
             chunk = pdf_bytes[start : start + CHUNK_SIZE]
             self.bytes_sent[arxiv_id] += len(chunk)
             yield chunk
+        self.pdfs_sent.append(arxiv_id)
 
 
 def extracted_document(arxiv_id: str) -> DoclingDocument:
@@ -150,16 +162,36 @@ def extracted_document(arxiv_id: str) -> DoclingDocument:
 
 
 class FakeDocling:
-    """Docling's converter, which extracts each Paper's document from its PDF, or fails on the Papers the test names."""
+    """
+    Docling's converter, which extracts each Paper's document from its PDF, or fails on the Papers the test names.
+    A parse takes no time, unless the test makes it last until arXiv has sent some PDFs.
+    """
 
     def __init__(self) -> None:
         self.failing: set[str] = set()
+        self.arxiv: FakeArxiv | None = None
+        self.pdfs_to_wait_for = 0
+        # Each parse, in order, once the test makes parses last: the arXiv ID of the Paper whose PDF it parsed, and those
+        # of the PDFs arXiv had sent whole when it ended.
+        self.parses: list[tuple[str, set[str]]] = []
 
     def fails_on(self, arxiv_id: str) -> None:
         self.failing.add(arxiv_id)
 
+    def parses_last_until(self, arxiv: FakeArxiv, *, has_sent: int) -> None:
+        """
+        Each parse holds its thread, as Docling's does, until arXiv has sent that many PDFs whole, or for PARSE_TIME_LIMIT.
+        """
+        self.arxiv = arxiv
+        self.pdfs_to_wait_for = has_sent
+
     def convert(self, source: str, max_num_pages: int, max_file_size: int) -> SimpleNamespace:
         arxiv_id = Path(source).stem
+        if self.arxiv:
+            deadline = time.monotonic() + PARSE_TIME_LIMIT
+            while len(self.arxiv.pdfs_sent) < self.pdfs_to_wait_for and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.parses.append((arxiv_id, set(self.arxiv.pdfs_sent)))
         if arxiv_id in self.failing:
             raise RuntimeError(f"Docling failed on {arxiv_id}")
         return SimpleNamespace(document=extracted_document(arxiv_id))
@@ -489,6 +521,18 @@ async def test_requests_to_arxiv_pdf_downloads_included_come_at_least_the_rate_l
     gaps = [later - earlier for earlier, later in itertools.pairwise(arxiv.request_times)]
     assert len(gaps) == 5
     assert min(gaps) >= 3
+
+
+async def test_downloads_progress_while_a_pdf_is_parsed(arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase) -> None:
+    # Five Papers, whose PDFs the fetcher downloads concurrently, one rate limit delay apart, in the order arXiv lists them.
+    papers = [f"2411.0000{number}v1" for number in range(5, 0, -1)]
+    arxiv.lists(*(atom_entry(arxiv_id) for arxiv_id in papers))
+    docling.parses_last_until(arxiv, has_sent=len(papers))
+
+    await ingest(DAY, arxiv, docling, database)
+
+    # The first parse, of the first PDF arXiv sent, began once that PDF arrived and lasted until arXiv had sent the others.
+    assert docling.parses[0] == (papers[0], set(papers))
 
 
 async def test_a_failed_download_leaves_no_partial_pdf_and_the_next_ingestion_downloads_it_again(
