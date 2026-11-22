@@ -16,7 +16,7 @@ from src.exceptions import (
     PDFDownloadTimeoutError,
     PDFTooLargeError,
 )
-from src.schemas.arxiv.paper import ArxivPaper
+from src.schemas.arxiv.paper import ArxivPaper, split_version
 
 logger = logging.getLogger(__name__)
 
@@ -207,23 +207,26 @@ class ArxivClient:
 
     async def fetch_paper_by_id(self, arxiv_id: str) -> ArxivPaper | None:
         """
-        Fetch a specific paper by its arXiv ID.
+        Fetch a specific paper by its arXiv ID, at its latest Version on arXiv.
 
         Args:
-            arxiv_id: arXiv paper ID (e.g., "2507.17748v1" or "2507.17748")
+            arxiv_id: arXiv paper ID, with any Version or none (e.g., "2507.17748v1", "2507.17748" or "solv-int/9901001")
 
         Returns:
             ArxivPaper object or None if not found
         """
-        # Clean the arXiv ID (remove version if needed for search)
-        clean_id = arxiv_id.split("v")[0] if "v" in arxiv_id else arxiv_id
-        params = {"id_list": clean_id, "max_results": 1}
+        # Any Version, or none, finds the Paper at its latest Version on arXiv (ADR 0004). Only a final Version goes, as
+        # an old-style ID names an archive that can contain a "v", such as solv-int/9901001.
+        without_version, _ = split_version(arxiv_id)
+        params = {"id_list": without_version, "max_results": 1}
 
         safe = ":+[]*"  # Don't encode :, +, [, ], *, characters needed for arXiv queries
         url = f"{self.base_url}?{urlencode(params, quote_via=quote, safe=safe)}"
 
         try:
-            async with httpx.AsyncClient(transport=self._transport) as client:
+            await self._wait_for_rate_limit()
+
+            async with httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport) as client:
                 response = await client.get(url)
                 response.raise_for_status()
                 xml_data = response.text
@@ -357,7 +360,8 @@ class ArxivClient:
         id_elem = entry.find("atom:id", self.namespaces)
         if id_elem is None or id_elem.text is None:
             return None
-        return id_elem.text.split("/")[-1]
+        # Everything after /abs/, as an old-style ID has a slash of its own, such as solv-int/9901001v2.
+        return id_elem.text.split("/abs/")[-1]
 
     def _get_authors(self, entry: Element) -> list[str]:
         """
