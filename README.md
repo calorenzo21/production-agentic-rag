@@ -43,7 +43,7 @@ Airflow creates the `arxiv_paper_ingestion` DAG paused: unpause it in Airflow's 
 | `make start`, `stop`, `restart`, `status`, `logs` | Manage the services |
 | `make health` | Asks every service for its health |
 | `make lint`, `format` | Ruff and mypy, with the course's configuration |
-| `make test`, `test-cov` | Tests against a disposable PostgreSQL, whose schema the Alembic migrations build. They need Docker running, but not the stack |
+| `make test`, `test-cov` | Tests against a disposable PostgreSQL, whose schema the Alembic migrations build, and a disposable OpenSearch at the stack's version, with its security plugin disabled. They need Docker running, but not the stack |
 | `make smoke` | Checks a running stack, including every security Deviation |
 | `make clean` | Removes this project's containers and volumes |
 
