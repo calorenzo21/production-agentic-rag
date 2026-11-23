@@ -144,11 +144,12 @@ def locked_version(package: str) -> str | None:
     return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
 
 
-def test_airflow_runs_the_docling_version_in_the_lock() -> None:
-    version = installed_version("airflow", "docling")
+@pytest.mark.parametrize("package", ["docling", "opensearch-py"])
+def test_airflow_runs_the_locked_version_of(package: str) -> None:
+    version = installed_version("airflow", package)
 
     assert version is not None
-    assert version == locked_version("docling")
+    assert version == locked_version(package)
 
 
 def can_import(service: str, module: str) -> bool:

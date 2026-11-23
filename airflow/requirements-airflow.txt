@@ -10,7 +10,7 @@ defusedxml>=0.7.1
 # PDF processing dependencies. The same version as in pyproject.toml (ADR 0003).
 docling==2.147.0
 
-# Search engine dependencies
+# Search engine dependencies. Airflow's constraints pin opensearch-py, and pyproject.toml pins the same version (ADR 0003).
 opensearch-py>=2.4.0
 
 # Database drivers
