@@ -4,7 +4,7 @@ A research assistant that collects academic papers from arXiv and answers resear
 
 This repository follows the [Production Agentic RAG course](https://github.com/jamwithai/production-agentic-rag-course) Week by Week, and its structure stays faithful to the course except for the Deviations listed below ([ADR 0002](docs/adr/0002-follow-the-course-with-recorded-deviations.md)). The course's own README explains each Week.
 
-**Current Week: 2, Ingestion.** Every day, Airflow runs an Ingestion of the Papers submitted four days earlier in the configured Category, `cs.AI` by default, as arXiv can take that long to announce them, and stores each Paper in `rag_db`, with its Content when Docling can parse its PDF. The API lists the Papers the curator holds, without their Content (`GET /api/v1/papers/`), returns one with its Content by its arXiv ID, with any Version or none (`GET /api/v1/papers/{arxiv_id}`) and reports the health of the database, OpenSearch and Ollama (`GET /api/v1/health`), with the number of Papers in the Index, which the API creates at startup but nothing fills yet. It answers no questions yet, as the course removes `/ask` at this Week.
+**Current Week: 2, Ingestion.** Every day, Airflow runs an Ingestion of the Papers submitted four days earlier in the configured Category, `cs.AI` by default, as arXiv can take that long to announce them, and stores each Paper in `rag_db`, with its Content when Docling can parse its PDF. The API lists the Papers the curator holds, without their Content (`GET /api/v1/papers/`), returns one with its Content by its arXiv ID, with any Version or none (`GET /api/v1/papers/{arxiv_id}`) and reports the health of the database, OpenSearch and Ollama (`GET /api/v1/health`), with the number of Papers in the Index, which the API creates at startup and `make reindex` fills with every Paper the curator holds. It answers no questions yet, as the course removes `/ask` at this Week.
 
 ## Setup on a Mac
 
@@ -42,6 +42,7 @@ Airflow creates the `arxiv_paper_ingestion` DAG paused: unpause it in Airflow's 
 |---|---|
 | `make start`, `stop`, `restart`, `status`, `logs` | Manage the services |
 | `make health` | Asks every service for its health |
+| `make reindex` | Rebuilds the Index from every Paper the curator holds, in the API container, and prints how many it indexed. Needs the stack running |
 | `make lint`, `format` | Ruff and mypy, with the course's configuration |
 | `make test`, `test-cov` | Tests against a disposable PostgreSQL, whose schema the Alembic migrations build, and a disposable OpenSearch at the stack's version, with its security plugin disabled. They need Docker running, but not the stack |
 | `make smoke` | Checks a running stack, including every security Deviation |
@@ -74,6 +75,8 @@ CI runs lint and `make test`.
 | OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
 | OpenSearch settings | An `http://` host, the index name and the maximum Content size, under `OPENSEARCH__` | An `https://` host, and also the username, the password and the CA certificate that TLS and the `rag_app` user need, all under `OPENSEARCH__`. The password is the `OPENSEARCH_APP_PASSWORD` that `make setup` generates |
 | OpenSearch client | Connects over plain HTTP, without logging in, and verifies no certificate | Connects over TLS, verifies OpenSearch's certificate and host name against our CA, and logs in as `rag_app`. The host's `https://` turns TLS on, so the tests reach their disposable OpenSearch, which has no security, through an `http://` host |
+| Indexing | In the DAG's indexing task, and again through an unused path in the metadata fetcher, which caps Content at `OPENSEARCH__MAX_TEXT_SIZE` where the task does not | In one module, `src/services/paper_indexer.py`, which `make reindex` calls, so that a Paper is indexed the same way whoever asks. Each Paper's entry is the course's, keyed on its arXiv ID without its Version ([ADR 0004](docs/adr/0004-a-paper-is-identified-by-its-arxiv-id-without-its-version.md)), with its Content capped at `OPENSEARCH__MAX_TEXT_SIZE`. The metadata fetcher has no indexing path, as indexing is a step apart from the Ingestion |
+| Rebuilding the Index | None. The course's notebook starts over from empty volumes instead, with `docker compose down -v` | `make reindex` recreates the Index with the course's mapping, indexes every Paper the curator holds, the Papers held before Week 3 included, and prints how many it indexed. When OpenSearch does not recreate the Index, it fails before indexing any Paper. Searches find fewer Papers until it ends, as the Index starts empty |
 | OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |
 | API container | Runs as `root` | Runs as an unprivileged user |
 | Docker build context | Everything, including `.env` | Only what the image needs (`.dockerignore`) |

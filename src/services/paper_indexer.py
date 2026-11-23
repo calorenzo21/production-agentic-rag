@@ -1,0 +1,86 @@
+"""
+The indexing of Papers into the Index. The course indexes them in the DAG's task, and again through an unused path in
+the metadata fetcher. Here this module alone indexes them, so that a Paper is indexed the same way whoever asks.
+"""
+
+import logging
+from typing import Any
+
+from sqlalchemy import Row, select
+from src.config import Settings, get_settings
+from src.db.interfaces.base import BaseDatabase
+from src.exceptions import OpenSearchException
+from src.models.paper import Paper
+from src.services.opensearch.client import OpenSearchClient
+
+logger = logging.getLogger(__name__)
+
+# What a Paper's entry holds, read without its sections and references, which can be as large as its text.
+ENTRY_COLUMNS = (
+    Paper.arxiv_id,
+    Paper.title,
+    Paper.authors,
+    Paper.abstract,
+    Paper.categories,
+    Paper.raw_text,
+    Paper.pdf_url,
+    Paper.published_date,
+    Paper.created_at,
+    Paper.updated_at,
+)
+
+# How many Papers to read from PostgreSQL at a time, so that indexing never holds every Paper's Content at once.
+BATCH_SIZE = 100
+
+
+class PaperIndexer:
+    """Indexes the Papers the curator holds into the Index, one entry per Paper, keyed on its arXiv ID without its Version."""
+
+    def __init__(self, database: BaseDatabase, opensearch_client: OpenSearchClient, max_content_size: int) -> None:
+        self.database = database
+        self.opensearch_client = opensearch_client
+        self.max_content_size = max_content_size
+
+    def rebuild_index(self) -> dict[str, int]:
+        """
+        Recreate the Index with the course's mapping, then index every Paper the curator holds, and count the Papers
+        held and those indexed. Until it ends, Searches find fewer Papers, as the Index starts empty.
+        """
+        if not self.opensearch_client.create_index(force=True):
+            # The client logs why. Whatever Index is left may have another mapping, or none, which indexing would create.
+            raise OpenSearchException(f"Could not recreate the Index {self.opensearch_client.index_name}, so indexed no Paper")
+        held = indexed = 0
+        with self.database.get_session() as session:
+            for paper in session.execute(select(*ENTRY_COLUMNS).execution_options(yield_per=BATCH_SIZE)):
+                held += 1
+                if self.opensearch_client.index_paper(self._entry(paper)):
+                    indexed += 1
+        logger.info(f"Indexed {indexed} of the {held} Papers the curator holds into {self.opensearch_client.index_name}")
+        return {"papers_held": held, "papers_indexed": indexed}
+
+    def _entry(self, paper: Row[Any]) -> dict[str, Any]:
+        """A Paper's entry in the Index: the course's, with its Content capped as the course's metadata fetcher caps it."""
+        return {
+            "arxiv_id": paper.arxiv_id,
+            "title": paper.title,
+            "authors": ", ".join(paper.authors),
+            "abstract": paper.abstract,
+            "categories": paper.categories,
+            # A Paper without Content is indexed with the rest, as the course does.
+            "raw_text": (paper.raw_text or "")[: self.max_content_size],
+            "pdf_url": paper.pdf_url,
+            "published_date": paper.published_date.isoformat(),
+            # The schema allows a Paper without them, though the Ingestion always sets both. Its entry then has none.
+            "created_at": paper.created_at.isoformat() if paper.created_at else None,
+            "updated_at": paper.updated_at.isoformat() if paper.updated_at else None,
+        }
+
+
+def make_paper_indexer(database: BaseDatabase, settings: Settings | None = None) -> PaperIndexer:
+    """The indexing of the Papers the database holds into the Index the settings name, with their maximum Content size."""
+    settings = settings or get_settings()
+    return PaperIndexer(
+        database,
+        OpenSearchClient(host=settings.opensearch.host, settings=settings),
+        max_content_size=settings.opensearch.max_text_size,
+    )

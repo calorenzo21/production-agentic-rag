@@ -1,4 +1,4 @@
-.PHONY: help start stop restart status logs health setup format lint test test-cov docker-running smoke clean
+.PHONY: help start stop restart status logs health reindex setup format lint test test-cov docker-running smoke clean
 
 # Default target
 help: ## Show this help message
@@ -29,6 +29,10 @@ health: ## Check all services health
 	(curl -fsS --cacert secrets/opensearch/ca.crt --user "rag_app:$$OPENSEARCH_APP_PASSWORD" https://localhost:9200/_cluster/health || echo '"OpenSearch not responding"') | jq .; \
 	(curl -fsS http://localhost:8080/api/v2/monitor/health || echo '"Airflow not responding"') | jq .; \
 	(curl -fsS http://localhost:11434/api/version || echo '"Ollama not responding"') | jq .
+
+# Index
+reindex: ## Rebuild the Index from every Paper the curator holds, in the API container. Needs the stack running
+	docker compose exec -T api python -m src.reindex
 
 # Development
 setup: ## Install dependencies, enable git hooks and generate missing secrets
