@@ -58,14 +58,25 @@ def test_ports_are_published_on_loopback_only() -> None:
     assert {port["URL"] for port in published} == {"127.0.0.1"}
 
 
-def test_the_api_reaches_the_database_and_native_ollama() -> None:
+def test_the_api_reaches_the_database_opensearch_and_native_ollama() -> None:
     response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok", body
     assert body["services"]["database"]["status"] == "healthy"
+    # OpenSearch only answers over TLS, to a user with a password, so this proves the API connects over TLS as rag_app.
+    assert body["services"]["opensearch"]["status"] == "healthy"
     assert body["services"]["ollama"]["status"] == "healthy"
+
+
+def test_the_api_reports_the_size_of_the_index() -> None:
+    index_name = settings_in("api", "OPENSEARCH__")["OPENSEARCH__INDEX_NAME"]
+    held = httpx.get(f"{OPENSEARCH_URL}/{index_name}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
+
+    response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
+
+    assert response.json()["services"]["opensearch"]["message"] == f"Index '{index_name}' with {held} documents"
 
 
 def test_the_api_lists_the_papers_rag_db_holds() -> None:

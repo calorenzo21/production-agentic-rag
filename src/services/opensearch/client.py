@@ -1,0 +1,248 @@
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from opensearchpy import OpenSearch
+from opensearchpy.exceptions import RequestError
+from src.config import Settings, get_settings
+
+from .index_config import ARXIV_PAPERS_INDEX, ARXIV_PAPERS_MAPPING
+
+logger = logging.getLogger(__name__)
+
+
+class OpenSearchClient:
+    """
+    Client for OpenSearch operations including index management and search.
+
+    This client provides methods for creating indices, indexing papers,
+    searching with BM25 scoring, and managing OpenSearch cluster operations.
+    """
+
+    def __init__(self, host: str = "http://localhost:9200", settings: Settings | None = None):
+        """Initialize OpenSearch client.
+
+        :param host: OpenSearch cluster endpoint URL
+        :param settings: Application settings instance (uses default if None)
+        :type host: str
+        :type settings: Optional[Settings]
+        """
+        self.host = host
+        self.settings = settings or get_settings()
+        self.index_name = self.settings.opensearch.index_name
+        # The course's OpenSearch has no security, so its client connects over plain HTTP without a login. This one
+        # requires TLS, which an https host turns on: the client verifies OpenSearch's certificate against our CA and
+        # logs in as rag_app. The tests' disposable OpenSearch has no security, so they reach it through an http host.
+        self.client = OpenSearch(
+            hosts=[host],
+            http_auth=(self.settings.opensearch.username, self.settings.opensearch.password),
+            verify_certs=True,
+            ca_certs=self.settings.opensearch.ca_certs,
+            http_compress=True,
+        )
+        # Use configured index name, fall back to constant if not set
+        self.index_name = self.settings.opensearch.index_name or ARXIV_PAPERS_INDEX
+        logger.info(f"OpenSearch client initialized with host: {host}")
+
+    def create_index(self, force: bool = False) -> bool:
+        """Create the arxiv-papers index with proper mappings.
+
+        :param force: If True, delete existing index before creating
+        :type force: bool
+        :returns: True if index was created, False if it already exists
+        :rtype: bool
+        """
+        try:
+            # Check if index exists
+            if self.client.indices.exists(index=self.index_name):
+                if force:
+                    logger.info(f"Deleting existing index: {self.index_name}")
+                    self.client.indices.delete(index=self.index_name)
+                else:
+                    self._wait_for_existing_index()
+                    return False
+
+            # Create index with mappings
+            try:
+                response = self.client.indices.create(index=self.index_name, body=ARXIV_PAPERS_MAPPING)
+            except RequestError as e:
+                # The API's 4 workers start at once, so another may have created the Index since the check above.
+                if e.error != "resource_already_exists_exception":
+                    raise
+                self._wait_for_existing_index()
+                return False
+
+            if response.get("acknowledged"):
+                logger.info(f"Successfully created index: {self.index_name}")
+                return True
+            else:
+                logger.error(f"Failed to create index: {response}")
+                return False
+
+        except RequestError as e:
+            logger.error(f"Error creating index: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error creating index: {e}")
+            return False
+
+    def _wait_for_existing_index(self) -> None:
+        """Wait until the existing Index can be used, as creating it does, since another worker may have just created it."""
+        logger.info(f"Index {self.index_name} already exists")
+        # Creating an index waits for its primary shard to start. A new index reports yellow before then.
+        self.client.cluster.health(index=self.index_name, wait_for_active_shards=1)
+
+    def index_paper(self, paper_data: dict[str, Any]) -> bool:
+        """Index a single paper document.
+
+        :param paper_data: Paper data to index
+        :type paper_data: Dict[str, Any]
+        :returns: True if successful, False otherwise
+        :rtype: bool
+        """
+        try:
+            # Ensure required fields
+            if "arxiv_id" not in paper_data:
+                logger.error("Missing arxiv_id in paper data")
+                return False
+
+            # Add timestamps if not present
+            if "created_at" not in paper_data:
+                paper_data["created_at"] = datetime.now(UTC).isoformat()
+            if "updated_at" not in paper_data:
+                paper_data["updated_at"] = datetime.now(UTC).isoformat()
+
+            # Convert authors list to string if needed
+            if isinstance(paper_data.get("authors"), list):
+                paper_data["authors"] = ", ".join(paper_data["authors"])
+
+            # Index the document
+            response = self.client.index(
+                index=self.index_name,
+                id=paper_data["arxiv_id"],
+                body=paper_data,
+                refresh=True,  # Make it immediately searchable
+            )
+
+            if response.get("result") in ["created", "updated"]:
+                logger.debug(f"Indexed paper: {paper_data['arxiv_id']}")
+                return True
+            else:
+                logger.error(f"Failed to index paper: {response}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error indexing paper {paper_data.get('arxiv_id', 'unknown')}: {e}")
+            return False
+
+    def bulk_index_papers(self, papers: list[dict[str, Any]]) -> dict[str, int]:
+        """Bulk index multiple papers.
+
+        :param papers: List of paper data to index
+        :type papers: List[Dict[str, Any]]
+        :returns: Dictionary with counts of successful and failed indexing
+        :rtype: Dict[str, int]
+        """
+        results = {"success": 0, "failed": 0}
+
+        for paper in papers:
+            if self.index_paper(paper):
+                results["success"] += 1
+            else:
+                results["failed"] += 1
+
+        logger.info(f"Bulk indexing complete: {results['success']} successful, {results['failed']} failed")
+        return results
+
+    def get_index_stats(self) -> dict[str, Any]:
+        """Get statistics about the index.
+
+        :returns: Dictionary with index statistics
+        :rtype: Dict[str, Any]
+        """
+        try:
+            stats = self.client.indices.stats(index=self.index_name)
+            count = self.client.count(index=self.index_name)
+
+            return {
+                "index_name": self.index_name,
+                "document_count": count["count"],
+                "size_in_bytes": stats["indices"][self.index_name]["total"]["store"]["size_in_bytes"],
+                "health": self.client.cluster.health(index=self.index_name)["status"],
+            }
+        except Exception as e:
+            logger.error(f"Error getting index stats: {e}")
+            return {"error": str(e)}
+
+    def health_check(self) -> bool:
+        """Check if OpenSearch is healthy and accessible.
+
+        :returns: True if healthy, False otherwise
+        :rtype: bool
+        """
+        try:
+            health = self.client.cluster.health()
+            return health["status"] in ["green", "yellow"]
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return False
+
+    def get_cluster_info(self) -> dict[str, Any] | None:
+        """Get OpenSearch cluster information.
+
+        :returns: Dictionary with cluster info or None if error
+        :rtype: Optional[Dict[str, Any]]
+        """
+        try:
+            info: dict[str, Any] = self.client.info()
+            return info
+        except Exception as e:
+            logger.error(f"Error getting cluster info: {e}")
+            return None
+
+    def get_cluster_health(self) -> dict[str, Any] | None:
+        """Get detailed cluster health information.
+
+        :returns: Dictionary with cluster health details or None if error
+        :rtype: Optional[Dict[str, Any]]
+        """
+        try:
+            health: dict[str, Any] = self.client.cluster.health()
+            return health
+        except Exception as e:
+            logger.error(f"Error getting cluster health: {e}")
+            return None
+
+    def get_index_mapping(self) -> dict[str, Any] | None:
+        """Get index mapping (alias for get_mappings for compatibility).
+
+        :returns: Dictionary with index mapping or None if error
+        :rtype: Optional[Dict[str, Any]]
+        """
+        try:
+            mappings = self.client.indices.get_mapping(index=self.index_name)
+            # Extract just the properties from the nested structure
+            if mappings and self.index_name in mappings:
+                mapping: dict[str, Any] = mappings[self.index_name].get("mappings", {})
+                return mapping
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting index mapping: {e}")
+            return None
+
+    def get_index_settings(self) -> dict[str, Any] | None:
+        """Get index settings (alias for get_settings for compatibility).
+
+        :returns: Dictionary with index settings or None if error
+        :rtype: Optional[Dict[str, Any]]
+        """
+        try:
+            settings = self.client.indices.get_settings(index=self.index_name)
+            # Extract just the settings for this index
+            if settings and self.index_name in settings:
+                index_settings: dict[str, Any] = settings[self.index_name].get("settings", {})
+                return index_settings
+            return {}
+        except Exception as e:
+            logger.error(f"Error getting index settings: {e}")
+            return None

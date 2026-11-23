@@ -12,6 +12,7 @@ from src.config import get_settings
 from src.db.factory import make_database
 from src.db.interfaces.base import BaseDatabase
 from src.models.base import Base
+from src.services.opensearch.factory import make_opensearch_client
 from testcontainers.opensearch import OpenSearchContainer
 from testcontainers.postgres import PostgresContainer
 
@@ -42,13 +43,25 @@ def database(migrated_database: BaseDatabase) -> Iterator[BaseDatabase]:
 
 @pytest.fixture(scope="session")
 def disposable_opensearch() -> Iterator[OpenSearch]:
-    """A disposable OpenSearch at the stack's version, with its security plugin disabled, so reached over plain HTTP."""
+    """
+    A disposable OpenSearch at the stack's version, with its security plugin disabled, so reached over plain HTTP, also
+    through the application's settings.
+    """
     container = OpenSearchContainer("opensearchproject/opensearch:2.19.0")
     # Query Insights would write the tests' queries to a top_queries-* index in the background, even between tests.
     for metric in ("latency", "cpu", "memory"):
         container.with_env(f"search.insights.top_queries.{metric}.enabled", "false")
-    with container:
+    with container, pytest.MonkeyPatch.context() as environment:
+        config = container.get_config()
+        environment.setenv("OPENSEARCH__HOST", f"http://{config['host']}:{config['port']}")
+        # Its own login, which it ignores without security, so that a rag_app password in .env never reaches it.
+        environment.setenv("OPENSEARCH__USERNAME", config["username"])
+        environment.setenv("OPENSEARCH__PASSWORD", config["password"])
+        get_settings.cache_clear()
+        make_opensearch_client.cache_clear()
         yield container.get_client()
+    get_settings.cache_clear()
+    make_opensearch_client.cache_clear()
 
 
 @pytest.fixture
