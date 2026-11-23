@@ -10,10 +10,12 @@ x-app-environment: &app-environment
   POSTGRES_ECHO_SQL: ${POSTGRES_ECHO_SQL:-false}
   POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE:-20}
   POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW:-0}
-  OPENSEARCH_HOST: https://opensearch:9200
-  OPENSEARCH_USERNAME: rag_app
-  OPENSEARCH_PASSWORD: ${OPENSEARCH_APP_PASSWORD:?run make setup}
-  OPENSEARCH_CA_CERTS: /certs/opensearch-ca.crt
+  OPENSEARCH__HOST: https://opensearch:9200
+  OPENSEARCH__INDEX_NAME: ${OPENSEARCH__INDEX_NAME:-arxiv-papers}
+  OPENSEARCH__MAX_TEXT_SIZE: ${OPENSEARCH__MAX_TEXT_SIZE:-1000000}
+  OPENSEARCH__USERNAME: rag_app
+  OPENSEARCH__PASSWORD: ${OPENSEARCH_APP_PASSWORD:?run make setup}
+  OPENSEARCH__CA_CERTS: /certs/opensearch-ca.crt
   # Ollama runs natively on the host so that it can use the GPU.
   OLLAMA_HOST: http://host.docker.internal:11434
   OLLAMA_MODELS: ${OLLAMA_MODELS:-llama3.2:1b,gpt-oss:20b}

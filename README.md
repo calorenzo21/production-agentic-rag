@@ -72,6 +72,7 @@ CI runs lint and `make test`.
 | Docling's torch | The default build, with NVIDIA libraries | The CPU build, in Airflow and in the `dev` group, as neither the containers nor CI has a GPU |
 | Database schema | `create_all` when the application connects | Alembic, in a `migrate` service that runs before the API and Airflow |
 | OpenSearch | No security | TLS with our own CA, users with passwords, and a `rag_app` role limited to `arxiv-papers*` |
+| OpenSearch settings | An `http://` host, the index name and the maximum Content size, under `OPENSEARCH__` | An `https://` host, and also the username, the password and the CA certificate that TLS and the `rag_app` user need, all under `OPENSEARCH__`. The password is the `OPENSEARCH_APP_PASSWORD` that `make setup` generates |
 | OpenSearch Dashboards | No login | Login required. Served over plain HTTP, on `127.0.0.1` only |
 | API container | Runs as `root` | Runs as an unprivileged user |
 | Docker build context | Everything, including `.env` | Only what the image needs (`.dockerignore`) |
@@ -108,6 +109,7 @@ CI runs lint and `make test`.
 | `airflow/dags/arxiv_paper_ingestion.py`, `airflow/dags/arxiv_ingestion/tasks.py` | The cleanup deletes PDFs older than 30 days from `/tmp`, but the arXiv client downloads them into `ARXIV__PDF_CACHE_DIR`, so that folder grows with every run | A Python task deletes them from the folder in the arXiv client's setting, resolved against the same working directory as the downloads. Newer PDFs stay, as the client reuses them instead of downloading them again |
 | `airflow/dags/arxiv_ingestion/tasks.py`, `src/services/metadata_fetcher.py` | Asks arXiv for 10 Papers a day, whatever `ARXIV__MAX_RESULTS` says | The metadata fetcher takes no limit, so it always asks for `ARXIV__MAX_RESULTS` Papers, newest first |
 | `.env.example` | `AIRFLOW__HOME` is not a real Airflow setting | Removed |
+| `.env.example`, `compose.yml` | Week 3 moves the OpenSearch host to `OPENSEARCH__HOST`, but still sets the flat `OPENSEARCH_HOST`, which nothing reads | Removed |
 | `pyproject.toml` | `testpaths` is under the coverage section, so pytest ignores it | Moved to the pytest section |
 | `src/` | Deprecated Pydantic, FastAPI and SQLAlchemy APIs, in Week 1's code and again in Week 2's | Replaced with their current forms |
 | `src/config.py`, `src/dependencies.py` | `get_settings` is defined twice, once without a cache, so the API reads `.env` three times and holds three `Settings` objects | One cached `get_settings`, in `src/config.py`. The unused `get_request_settings` is removed |

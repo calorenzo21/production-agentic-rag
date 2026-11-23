@@ -47,6 +47,21 @@ class PDFParserSettings(DefaultSettings):
     do_table_structure: bool = True
 
 
+class OpenSearchSettings(DefaultSettings):
+    """OpenSearch client settings."""
+
+    # Without its prefix, it would also read unprefixed variables such as HOST and PASSWORD.
+    model_config = SettingsConfigDict(env_prefix="OPENSEARCH__")
+
+    host: str = "https://localhost:9200"
+    index_name: str = "arxiv-papers"
+    max_text_size: int = 1000000
+    # The course's OpenSearch needs neither TLS nor a login. This one requires both, as the rag_app user.
+    username: str = "rag_app"
+    password: str = ""
+    ca_certs: str = "secrets/opensearch/ca.crt"
+
+
 class Settings(DefaultSettings):
     """Application settings."""
 
@@ -61,12 +76,6 @@ class Settings(DefaultSettings):
     postgres_pool_size: int = 20
     postgres_max_overflow: int = 0
 
-    # OpenSearch configuration
-    opensearch_host: str = "https://localhost:9200"
-    opensearch_username: str = "rag_app"
-    opensearch_password: str = ""
-    opensearch_ca_certs: str = "secrets/opensearch/ca.crt"
-
     # Ollama configuration (used in Week 1 notebook)
     ollama_host: str = "http://localhost:11434"
     # The course's Week 2 types it list[str], which pydantic-settings reads as JSON, so OLLAMA_MODELS=llama3.2:1b fails.
@@ -79,6 +88,9 @@ class Settings(DefaultSettings):
 
     # PDF parser settings
     pdf_parser: PDFParserSettings = Field(default_factory=PDFParserSettings)
+
+    # OpenSearch settings
+    opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)
 
     @field_validator("ollama_models", mode="before")
     @classmethod
