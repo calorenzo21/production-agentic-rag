@@ -5,9 +5,11 @@ from typing import Any
 
 import pytest
 from opensearchpy import OpenSearch
+from sqlalchemy import update
 from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
 from src.exceptions import OpenSearchException
+from src.models.paper import Paper
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import PaperCreate
 from src.services.opensearch.index_config import ARXIV_PAPERS_MAPPING
@@ -37,13 +39,30 @@ def hold(database: BaseDatabase, *papers: PaperCreate) -> None:
             repository.upsert(held)
 
 
+def created_long_before(database: BaseDatabase, arxiv_id: str) -> None:
+    """Date the Paper's row back to a day long before, as if that day's Ingestion had created it."""
+    with database.get_session() as session:
+        session.execute(update(Paper).where(Paper.arxiv_id == arxiv_id).values(created_at=datetime(2024, 11, 2, 6)))
+        session.commit()
+
+
 def rebuild(database: BaseDatabase) -> dict[str, int]:
     """Rebuild the Index, with the settings the environment holds now."""
     return make_paper_indexer(database, Settings()).rebuild_index()
 
 
+def index(database: BaseDatabase, arxiv_ids: list[str]) -> dict[str, int]:
+    """Index the Papers with these arXiv IDs, with the settings the environment holds now."""
+    return make_paper_indexer(database, Settings()).index_papers(arxiv_ids)
+
+
 def index_name() -> str:
     return Settings().opensearch.index_name
+
+
+def create_index(opensearch: OpenSearch) -> None:
+    """Create the Index with the course's mapping, as the DAG's setup task does before each day's Ingestion."""
+    opensearch.indices.create(index=index_name(), body=ARXIV_PAPERS_MAPPING)
 
 
 def entry_ids(opensearch: OpenSearch) -> list[str]:
@@ -112,3 +131,33 @@ def test_content_longer_than_the_maximum_content_size_is_capped(
     rebuild(database)
 
     assert opensearch.get(index=index_name(), id="2411.00001")["_source"]["raw_text"] == "The Content of"
+
+
+def test_indexing_given_arxiv_ids_indexes_exactly_those_papers_and_no_other_paper_the_curator_holds(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_index(opensearch)
+    hold(database, paper("2411.00001"), paper("2411.00002"), paper("2411.00003"))
+
+    counts = index(database, ["2411.00001", "2411.00003"])
+
+    assert counts == {"papers_to_index": 2, "papers_indexed": 2}
+    assert entry_ids(opensearch) == ["2411.00001", "2411.00003"]
+
+
+def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_title_and_abstract_still_as_one_entry(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_index(opensearch)
+    # Ingested and indexed long before, so its row was created then.
+    hold(database, paper("2411.00001", version=1, title="A first title", abstract="A first abstract."))
+    created_long_before(database, "2411.00001")
+    index(database, ["2411.00001"])
+    # Today's Ingestion stores its new Version, which updates the Paper's row.
+    hold(database, paper("2411.00001", version=2, title="A revised title", abstract="A revised abstract."))
+
+    index(database, ["2411.00001"])
+
+    assert entry_ids(opensearch) == ["2411.00001"]
+    entry = opensearch.get(index=index_name(), id="2411.00001")["_source"]
+    assert (entry["title"], entry["abstract"]) == ("A revised title", "A revised abstract.")

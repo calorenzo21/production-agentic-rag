@@ -6,10 +6,9 @@ from airflow.sdk import DAG, CronTriggerTimetable
 # Import task functions from separate module
 from arxiv_ingestion.tasks import (
     cleanup_temp_files,
-    create_opensearch_placeholders,
     fetch_daily_papers,
     generate_daily_report,
-    process_failed_pdfs,
+    index_papers_to_opensearch,
     setup_environment,
 )
 
@@ -29,7 +28,7 @@ default_args = {
 dag = DAG(
     "arxiv_paper_ingestion",
     default_args=default_args,
-    description="Daily arXiv CS.AI paper ingestion and processing pipeline",
+    description="Daily arXiv CS.AI paper pipeline: fetch → store to PostgreSQL → index to OpenSearch",
     # Every day at 6 AM UTC, weekends included. A trigger timetable makes a run's logical date the day it runs,
     # and each run ingests the day four days before, the most recent day arXiv has always finished announcing (see
     # ANNOUNCEMENT_LAG). Missed days are recovered with `airflow backfill create`, whose run of a day also ingests
@@ -37,7 +36,7 @@ dag = DAG(
     schedule=CronTriggerTimetable("0 6 * * *", timezone="UTC"),
     max_active_runs=1,
     catchup=False,
-    tags=["arxiv", "papers", "ingestion", "week2"],
+    tags=["arxiv", "papers", "ingestion", "opensearch", "week3"],
 )
 
 # Task definitions
@@ -53,15 +52,10 @@ fetch_task = PythonOperator(
     dag=dag,
 )
 
-retry_task = PythonOperator(
-    task_id="process_failed_pdfs",
-    python_callable=process_failed_pdfs,
-    dag=dag,
-)
-
+# Indexes the Papers fetch_task stored, by the arXiv IDs it passes on through XCom.
 opensearch_task = PythonOperator(
-    task_id="create_opensearch_placeholders",
-    python_callable=create_opensearch_placeholders,
+    task_id="index_papers_to_opensearch",
+    python_callable=index_papers_to_opensearch,
     dag=dag,
 )
 
@@ -79,5 +73,5 @@ cleanup_task = PythonOperator(
 )
 
 # Task dependencies
-# Main pipeline: setup -> fetch -> (retry + opensearch) -> report -> cleanup
-setup_task >> fetch_task >> [retry_task, opensearch_task] >> report_task >> cleanup_task
+# Main pipeline: setup -> fetch -> opensearch -> report -> cleanup
+setup_task >> fetch_task >> opensearch_task >> report_task >> cleanup_task

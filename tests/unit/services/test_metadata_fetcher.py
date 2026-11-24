@@ -110,7 +110,7 @@ def paper_postgresql_refuses(database: BaseDatabase) -> Iterator[str]:
 
 
 async def ingest(day: str, arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase) -> dict[str, Any]:
-    """Ingest the Papers submitted on the day, with the settings the environment holds now, and return its counts."""
+    """Ingest the Papers submitted on the day, with the settings the environment holds now, and return its summary."""
     settings = Settings()
     pdf_parser = PDFParserService(
         max_pages=settings.pdf_parser.max_pages,
@@ -300,6 +300,21 @@ async def test_a_paper_that_fails_to_store_leaves_the_days_other_papers_stored(
     await ingest(DAY, arxiv, docling, database)
 
     assert [paper.arxiv_id for paper in held_papers(database)] == ["2411.00003", "2411.00001"]
+
+
+async def test_the_summary_lists_the_arxiv_ids_of_the_papers_stored_and_not_of_those_that_failed_to_store(
+    arxiv: FakeArxiv, docling: FakeDocling, database: BaseDatabase, paper_postgresql_refuses: str
+) -> None:
+    arxiv.lists(
+        atom_entry("2411.00003v2", published="2024-11-01T18:00:00Z"),
+        atom_entry(paper_postgresql_refuses, published="2024-11-01T15:00:00Z"),
+        atom_entry("2411.00001v1", published="2024-11-01T09:30:00Z"),
+    )
+
+    summary = await ingest(DAY, arxiv, docling, database)
+
+    # Without their Versions, as the curator holds the Papers and the Index keys them (ADR 0004).
+    assert summary["stored_arxiv_ids"] == ["2411.00003", "2411.00001"]
 
 
 async def test_a_parsed_paper_is_stored_with_its_content_and_marked_as_processed(

@@ -6,7 +6,7 @@ the metadata fetcher. Here this module alone indexes them, so that a Paper is in
 import logging
 from typing import Any
 
-from sqlalchemy import Row, select
+from sqlalchemy import Row, Select, select
 from src.config import Settings, get_settings
 from src.db.interfaces.base import BaseDatabase
 from src.exceptions import OpenSearchException
@@ -49,14 +49,28 @@ class PaperIndexer:
         if not self.opensearch_client.create_index(force=True):
             # The client logs why. Whatever Index is left may have another mapping, or none, which indexing would create.
             raise OpenSearchException(f"Could not recreate the Index {self.opensearch_client.index_name}, so indexed no Paper")
-        held = indexed = 0
-        with self.database.get_session() as session:
-            for paper in session.execute(select(*ENTRY_COLUMNS).execution_options(yield_per=BATCH_SIZE)):
-                held += 1
-                if self.opensearch_client.index_paper(self._entry(paper)):
-                    indexed += 1
+        held, indexed = self._index(select(*ENTRY_COLUMNS))
         logger.info(f"Indexed {indexed} of the {held} Papers the curator holds into {self.opensearch_client.index_name}")
         return {"papers_held": held, "papers_indexed": indexed}
+
+    def index_papers(self, arxiv_ids: list[str]) -> dict[str, int]:
+        """
+        Index the Papers with these arXiv IDs, without their Versions, into the Index, and count the Papers to index and
+        those indexed. The Index must exist, as the DAG's setup task and the API's startup create it.
+        """
+        _found, indexed = self._index(select(*ENTRY_COLUMNS).where(Paper.arxiv_id.in_(arxiv_ids)))
+        logger.info(f"Indexed {indexed} of the {len(arxiv_ids)} Papers to index into {self.opensearch_client.index_name}")
+        return {"papers_to_index": len(arxiv_ids), "papers_indexed": indexed}
+
+    def _index(self, statement: Select[Any]) -> tuple[int, int]:
+        """Index the Papers the statement selects, reading BATCH_SIZE at a time, and count those selected and those indexed."""
+        selected = indexed = 0
+        with self.database.get_session() as session:
+            for paper in session.execute(statement.execution_options(yield_per=BATCH_SIZE)):
+                selected += 1
+                if self.opensearch_client.index_paper(self._entry(paper)):
+                    indexed += 1
+        return selected, indexed
 
     def _entry(self, paper: Row[Any]) -> dict[str, Any]:
         """A Paper's entry in the Index: the course's, with its Content capped as the course's metadata fetcher caps it."""
