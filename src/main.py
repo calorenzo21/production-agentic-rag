@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI
 from src.config import get_settings
 from src.db.factory import make_database
-from src.routers import papers, ping
+from src.routers import papers, ping, search
 from src.services.opensearch.factory import make_opensearch_client
 
 # Setup logging
@@ -73,6 +73,7 @@ app = FastAPI(
 # Include routers
 app.include_router(ping.router, prefix="/api/v1")
 app.include_router(papers.router, prefix="/api/v1")
+app.include_router(search.router, prefix="/api/v1")
 
 
 if __name__ == "__main__":

@@ -3,10 +3,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from opensearchpy import OpenSearch
-from opensearchpy.exceptions import RequestError
+from opensearchpy.exceptions import NotFoundError, RequestError
 from src.config import Settings, get_settings
 
 from .index_config import ARXIV_PAPERS_INDEX, ARXIV_PAPERS_MAPPING
+from .query_builder import PaperQueryBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,72 @@ class OpenSearchClient:
 
         logger.info(f"Bulk indexing complete: {results['success']} successful, {results['failed']} failed")
         return results
+
+    def search_papers(
+        self,
+        query: str,
+        size: int = 10,
+        from_: int = 0,
+        fields: list[str] | None = None,
+        categories: list[str] | None = None,
+        track_total_hits: bool = True,
+        latest_papers: bool = False,
+    ) -> dict[str, Any]:
+        """Search papers using BM25 scoring with query builder.
+
+        :param query: Search query text
+        :param size: Number of results to return
+        :param from_: Offset for pagination
+        :param fields: List of fields to search in (default: title, abstract, authors)
+        :param categories: Filter by categories
+        :param track_total_hits: Whether to track total hits accurately
+        :param latest_papers: Sort by publication date instead of relevance
+        :type query: str
+        :type size: int
+        :type from_: int
+        :type fields: Optional[List[str]]
+        :type categories: Optional[List[str]]
+        :type track_total_hits: bool
+        :type latest_papers: bool
+        :returns: Search results with hits and metadata
+        :rtype: Dict[str, Any]
+        """
+        try:
+            # Build query using query builder
+            query_builder = PaperQueryBuilder(
+                query=query,
+                size=size,
+                from_=from_,
+                fields=fields,
+                categories=categories,
+                track_total_hits=track_total_hits,
+                latest_papers=latest_papers,
+            )
+
+            search_body = query_builder.build()
+
+            # Execute search
+            response = self.client.search(index=self.index_name, body=search_body)
+
+            # Format results
+            results = {"total": response["hits"]["total"]["value"], "hits": []}
+
+            for hit in response["hits"]["hits"]:
+                paper = hit["_source"]
+                paper["score"] = hit["_score"]
+                if "highlight" in hit:
+                    paper["highlights"] = hit["highlight"]
+                results["hits"].append(paper)
+
+            logger.info(f"Search for '{query}' returned {results['total']} results")
+            return results
+
+        except NotFoundError:
+            logger.error(f"Index {self.index_name} not found")
+            return {"total": 0, "hits": [], "error": "Index not found"}
+        except Exception as e:
+            logger.error(f"Search error: {e}")
+            return {"total": 0, "hits": [], "error": str(e)}
 
     def get_index_stats(self) -> dict[str, Any]:
         """Get statistics about the index.
