@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import Row, Select, select
 from src.config import Settings, get_settings
 from src.db.interfaces.base import BaseDatabase
-from src.exceptions import OpenSearchException
+from src.exceptions import OpenSearchException, PapersNotIndexed
 from src.models.paper import Paper
 from src.services.opensearch.client import OpenSearchClient
 
@@ -45,32 +45,79 @@ class PaperIndexer:
         """
         Recreate the Index with the course's mapping, then index every Paper the curator holds, and count the Papers
         held and those indexed. Until it ends, Searches find fewer Papers, as the Index starts empty.
+
+        Raises PapersNotIndexed before indexing any Paper when OpenSearch does not recreate the Index, as when it does not
+        answer. Otherwise it indexes every Paper it can, then raises it naming the others.
         """
         if not self.opensearch_client.create_index(force=True):
             # The client logs why. Whatever Index is left may have another mapping, or none, which indexing would create.
-            raise OpenSearchException(f"Could not recreate the Index {self.opensearch_client.index_name}, so indexed no Paper")
-        held, indexed = self._index(select(*ENTRY_COLUMNS))
-        logger.info(f"Indexed {indexed} of the {held} Papers the curator holds into {self.opensearch_client.index_name}")
+            raise PapersNotIndexed(
+                f"Could not recreate the Index {self.opensearch_client.index_name}, so indexed no Paper", papers_indexed=0
+            )
+        held, not_indexed = self._index(select(*ENTRY_COLUMNS))
+        indexed = held - len(not_indexed)
+        self._log_or_fail(
+            f"Indexed {indexed} of the {held} Papers the curator holds into {self.opensearch_client.index_name}",
+            indexed,
+            not_indexed,
+        )
         return {"papers_held": held, "papers_indexed": indexed}
 
     def index_papers(self, arxiv_ids: list[str]) -> dict[str, int]:
         """
         Index the Papers with these arXiv IDs, without their Versions, into the Index, and count the Papers to index and
         those indexed. The Index must exist, as the DAG's setup task and the API's startup create it.
+
+        Raises PapersNotIndexed before indexing any Paper when OpenSearch does not answer or the Index does not exist.
+        Otherwise it indexes every Paper it can, then raises it naming the others.
         """
-        _found, indexed = self._index(select(*ENTRY_COLUMNS).where(Paper.arxiv_id.in_(arxiv_ids)))
-        logger.info(f"Indexed {indexed} of the {len(arxiv_ids)} Papers to index into {self.opensearch_client.index_name}")
+        try:
+            index_exists = self.opensearch_client.index_exists()
+        except OpenSearchException as e:
+            raise PapersNotIndexed(
+                f"Could not check that the Index {self.opensearch_client.index_name} exists, so indexed none of the "
+                f"{len(arxiv_ids)} Papers to index: {e}",
+                papers_indexed=0,
+            ) from e
+        if not index_exists:
+            # OpenSearch would create it for the first Paper, with a mapping it guesses, where the Category filter matches
+            # nothing. Rebuilding the Index creates it with the course's mapping.
+            raise PapersNotIndexed(
+                f"The Index {self.opensearch_client.index_name} does not exist, so indexed none of the {len(arxiv_ids)} "
+                "Papers to index",
+                papers_indexed=0,
+            )
+        found, not_indexed = self._index(select(*ENTRY_COLUMNS).where(Paper.arxiv_id.in_(arxiv_ids)))
+        indexed = found - len(not_indexed)
+        self._log_or_fail(
+            f"Indexed {indexed} of the {len(arxiv_ids)} Papers to index into {self.opensearch_client.index_name}",
+            indexed,
+            not_indexed,
+        )
         return {"papers_to_index": len(arxiv_ids), "papers_indexed": indexed}
 
-    def _index(self, statement: Select[Any]) -> tuple[int, int]:
-        """Index the Papers the statement selects, reading BATCH_SIZE at a time, and count those selected and those indexed."""
-        selected = indexed = 0
+    @staticmethod
+    def _log_or_fail(summary: str, indexed: int, not_indexed: list[str]) -> None:
+        """Log the summary of an indexing, or raise it as PapersNotIndexed when the indexing left Papers out, naming them."""
+        if not_indexed:
+            raise PapersNotIndexed(f"{summary}, but could not index {', '.join(not_indexed)}", papers_indexed=indexed)
+        logger.info(summary)
+
+    def _index(self, statement: Select[Any]) -> tuple[int, list[str]]:
+        """
+        Index the Papers the statement selects, reading BATCH_SIZE at a time, and count those selected. One Paper that
+        cannot be indexed does not stop the others, so it also returns the arXiv IDs of those it could not index. Neither
+        does an OpenSearch that stops answering midway: each Paper left then fails on its own, after the client's timeout.
+        """
+        selected = 0
+        not_indexed: list[str] = []
         with self.database.get_session() as session:
             for paper in session.execute(statement.execution_options(yield_per=BATCH_SIZE)):
                 selected += 1
-                if self.opensearch_client.index_paper(self._entry(paper)):
-                    indexed += 1
-        return selected, indexed
+                # The client logs why, whether OpenSearch rejected the Paper or did not answer.
+                if not self.opensearch_client.index_paper(self._entry(paper)):
+                    not_indexed.append(paper.arxiv_id)
+        return selected, not_indexed
 
     def _entry(self, paper: Row[Any]) -> dict[str, Any]:
         """A Paper's entry in the Index: the course's, with its Content capped as the course's metadata fetcher caps it."""

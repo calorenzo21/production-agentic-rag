@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from opensearchpy import OpenSearch
-from opensearchpy.exceptions import NotFoundError, RequestError
+from opensearchpy.exceptions import NotFoundError, RequestError, TransportError
 from src.config import Settings, get_settings
+from src.exceptions import OpenSearchException
 
 from .index_config import ARXIV_PAPERS_INDEX, ARXIV_PAPERS_MAPPING
 from .query_builder import PaperQueryBuilder
@@ -92,6 +93,16 @@ class OpenSearchClient:
         logger.info(f"Index {self.index_name} already exists")
         # Creating an index waits for its primary shard to start. A new index reports yellow before then.
         self.client.cluster.health(index=self.index_name, wait_for_active_shards=1)
+
+    def index_exists(self) -> bool:
+        """
+        Whether the Index exists. Unlike the course's methods, it raises OpenSearchException when it cannot tell, as when
+        OpenSearch does not answer, so that an OpenSearch that is down is not taken for a missing Index.
+        """
+        try:
+            return bool(self.client.indices.exists(index=self.index_name))
+        except TransportError as e:
+            raise OpenSearchException(str(e)) from e
 
     def index_paper(self, paper_data: dict[str, Any]) -> bool:
         """Index a single paper document.
