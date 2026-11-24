@@ -6,6 +6,7 @@ from typing import Any
 
 from dateutil import parser as date_parser
 from sqlalchemy.orm import Session
+from src.config import Settings, get_settings
 from src.exceptions import MetadataFetchingException, PDFParsingException, PipelineException
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import ArxivPaper, PaperCreate, split_version
@@ -401,27 +402,30 @@ def make_metadata_fetcher(
     arxiv_client: ArxivClient,
     pdf_parser: PDFParserService,
     pdf_cache_dir: Path | None = None,
+    settings: Settings | None = None,
 ) -> MetadataFetcher:
     """
-    Factory function to create MetadataFetcher instance optimized for production.
+    Factory function to create MetadataFetcher instance with configuration settings.
 
-    Configured for typical production workloads (100 papers/day):
-    - 5 concurrent downloads (I/O bound, can handle more)
-    - 3 concurrent parsing operations (CPU intensive, use fewer)
-    - Async pipeline for optimal resource utilization
+    Unlike the course's, it takes no OpenSearch client, as indexing is a step apart from the Ingestion.
 
     Args:
         arxiv_client: Configured ArxivClient
         pdf_parser: Configured PDFParserService (singleton with model caching)
         pdf_cache_dir: Optional PDF cache directory
+        settings: Application settings, whose ARXIV__MAX_CONCURRENT_DOWNLOADS and ARXIV__MAX_CONCURRENT_PARSING set the
+            concurrency (uses get_settings() if None)
 
     Returns:
-        MetadataFetcher instance optimized for production
+        Configured MetadataFetcher instance
     """
+    if settings is None:
+        settings = get_settings()
+
     return MetadataFetcher(
         arxiv_client=arxiv_client,
         pdf_parser=pdf_parser,
         pdf_cache_dir=pdf_cache_dir,
-        max_concurrent_downloads=5,
-        max_concurrent_parsing=1,
+        max_concurrent_downloads=settings.arxiv.max_concurrent_downloads,
+        max_concurrent_parsing=settings.arxiv.max_concurrent_parsing,
     )

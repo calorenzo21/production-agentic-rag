@@ -15,8 +15,8 @@ class PDFParserService:
 
     def __init__(
         self,
-        max_pages: int = 20,
-        max_file_size_mb: int = 20,
+        max_pages: int,
+        max_file_size_mb: int,
         do_ocr: bool = False,
         do_table_structure: bool = True,
         converter: DocumentConverter | None = None,
@@ -25,8 +25,8 @@ class PDFParserService:
         Initialize PDF parser service with configurable limits.
 
         Args:
-            max_pages: Maximum number of pages to process (default: 20)
-            max_file_size_mb: Maximum file size in MB (default: 20MB)
+            max_pages: Maximum number of pages to process
+            max_file_size_mb: Maximum file size in MB
             do_ocr: Enable OCR for scanned PDFs (default: False, very slow)
             do_table_structure: Extract table structures (default: True)
             converter: None converts with Docling. Tests pass a converter that fakes it.

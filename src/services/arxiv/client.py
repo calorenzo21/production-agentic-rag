@@ -457,18 +457,21 @@ class ArxivClient:
         safe_filename = arxiv_id.replace("/", "_") + ".pdf"
         return self.pdf_cache_dir / safe_filename
 
-    async def _download_with_retry(self, url: str, path: Path, max_retries: int = 3) -> bool:
+    async def _download_with_retry(self, url: str, path: Path, max_retries: int | None = None) -> bool:
         """
         Download a file with retry logic.
 
         Args:
             url: URL to download from
             path: Path to save the file
-            max_retries: Maximum number of retry attempts
+            max_retries: Maximum number of attempts (uses ARXIV__DOWNLOAD_MAX_RETRIES if None)
 
         Returns:
             True if successful, False otherwise
         """
+        if max_retries is None:
+            max_retries = self._settings.download_max_retries
+
         logger.info(f"Downloading PDF from {url}")
         # The PDF arrives under this name and takes its own only once complete, so the cache never holds part of one.
         partial_path = path.with_name(f"{path.name}.part")
@@ -498,7 +501,7 @@ class ArxivClient:
 
             except httpx.TimeoutException as e:
                 if attempt < max_retries - 1:
-                    wait_time = 5 * (attempt + 1)
+                    wait_time = self._settings.download_retry_delay_base * (attempt + 1)
                     logger.warning(f"PDF download timeout (attempt {attempt + 1}/{max_retries}): {e}")
                     logger.info(f"Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
@@ -507,7 +510,7 @@ class ArxivClient:
                     raise PDFDownloadTimeoutError(f"PDF download timed out after {max_retries} attempts: {e}") from e
             except httpx.HTTPError as e:
                 if attempt < max_retries - 1:
-                    wait_time = 5 * (attempt + 1)  # Exponential backoff
+                    wait_time = self._settings.download_retry_delay_base * (attempt + 1)  # Linear backoff
                     logger.warning(f"Download failed (attempt {attempt + 1}/{max_retries}): {e}")
                     logger.info(f"Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)

@@ -120,7 +120,7 @@ async def ingest(day: str, arxiv: FakeArxiv, docling: FakeDocling, database: Bas
         converter=docling,
     )
     arxiv_client = ArxivClient(settings.arxiv, max_pdf_size_mb=settings.pdf_parser.max_file_size_mb, transport=arxiv.transport)
-    fetcher = make_metadata_fetcher(arxiv_client, pdf_parser)
+    fetcher = make_metadata_fetcher(arxiv_client, pdf_parser, settings=settings)
     with database.get_session() as session:
         return await fetcher.fetch_and_process_papers(from_date=day, to_date=day, db_session=session)
 

@@ -1,13 +1,17 @@
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+PROJECT_ROOT = Path(__file__).parent.parent
+ENV_FILE_PATH = PROJECT_ROOT / ".env"
+
 
 class DefaultSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[".env", str(ENV_FILE_PATH)],
         extra="ignore",
         frozen=True,
         env_nested_delimiter="__",
@@ -28,11 +32,18 @@ class ArxivSettings(DefaultSettings):
             "arxiv": "http://arxiv.org/schemas/atom",
         }
     )
+    # The course's Week 3 creates it whenever the settings load. The arXiv client creates it when it first needs it
+    # instead, as the API and the migrations load the settings too, as a user who cannot create it (README.md).
     pdf_cache_dir: str = "./data/arxiv_pdfs"
     rate_limit_delay: float = 3.0  # seconds between requests
     timeout_seconds: int = 30
+    # The course's Week 3 lowers it to 15. README.md records keeping 100 as a Deviation.
     max_results: int = 100
     search_category: str = "cs.AI"  # Default category to search
+    download_max_retries: int = 3  # attempts at each PDF download, the first one included
+    download_retry_delay_base: float = 5.0  # the nth retry waits n times this many seconds
+    max_concurrent_downloads: int = 5
+    max_concurrent_parsing: int = 1
 
 
 class PDFParserSettings(DefaultSettings):
@@ -67,7 +78,7 @@ class Settings(DefaultSettings):
 
     app_version: str = "0.1.0"
     debug: bool = True
-    environment: str = "development"
+    environment: Literal["development", "staging", "production"] = "development"
     service_name: str = "rag-api"
 
     # PostgreSQL configuration
@@ -78,9 +89,7 @@ class Settings(DefaultSettings):
 
     # Ollama configuration (used in Week 1 notebook)
     ollama_host: str = "http://localhost:11434"
-    # The course's Week 2 types it list[str], which pydantic-settings reads as JSON, so OLLAMA_MODELS=llama3.2:1b fails.
-    ollama_models: str | list[str] = Field(default=["llama3.2:1b"])
-    ollama_default_model: str = "llama3.2:1b"
+    ollama_model: str = "llama3.2:1b"
     ollama_timeout: int = 300  # 5 minutes for LLM operations
 
     # arXiv settings
@@ -92,12 +101,11 @@ class Settings(DefaultSettings):
     # OpenSearch settings
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)
 
-    @field_validator("ollama_models", mode="before")
+    @field_validator("postgres_database_url")
     @classmethod
-    def parse_ollama_models(cls, v: Any) -> Any:
-        """Parse comma-separated string into list of models."""
-        if isinstance(v, str):
-            return [model.strip() for model in v.split(",") if model.strip()]
+    def validate_database_url(cls, v: str) -> str:
+        if not v.startswith(("postgresql://", "postgresql+psycopg2://")):
+            raise ValueError("Database URL must start with 'postgresql://' or 'postgresql+psycopg2://'")
         return v
 
 

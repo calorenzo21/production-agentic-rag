@@ -51,7 +51,7 @@ class PaperCreate(PaperBase):
     references: list[dict[str, Any]] | None = Field(default=None, description="List of references if extracted")
 
     # PDF processing metadata (optional)
-    parser_used: str | None = Field(default=None, description="Which parser was used (DOCLING, GROBID, etc.)")
+    parser_used: str | None = Field(default=None, description="Which parser was used (DOCLING, etc.)")
     parser_metadata: dict[str, Any] | None = Field(default=None, description="Additional parser metadata")
     pdf_processed: bool | None = Field(default=False, description="Whether PDF was successfully processed")
     pdf_processing_date: datetime | None = Field(default=None, description="When PDF was processed")
