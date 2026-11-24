@@ -1,4 +1,4 @@
-.PHONY: help start stop restart status logs health setup format lint test test-cov docker-running smoke clean
+.PHONY: help start stop restart status logs health reindex setup format lint test test-cov docker-running smoke clean
 
 # Default target
 help: ## Show this help message
@@ -30,6 +30,10 @@ health: ## Check all services health
 	(curl -fsS http://localhost:8080/api/v2/monitor/health || echo '"Airflow not responding"') | jq .; \
 	(curl -fsS http://localhost:11434/api/version || echo '"Ollama not responding"') | jq .
 
+# Index
+reindex: ## Rebuild the Index from every Paper the curator holds, in the API container. Needs the stack running
+	docker compose exec -T api python -m src.reindex
+
 # Development
 setup: ## Install dependencies, enable git hooks and generate missing secrets
 	uv sync
@@ -46,14 +50,14 @@ lint: ## Lint and type check
 # testcontainers ignores Docker contexts, so the tests are pointed at the current one, such as Colima's.
 test test-cov: export DOCKER_HOST ?= $(shell docker context inspect --format '{{.Endpoints.docker.Host}}')
 
-test: docker-running ## Run tests against a disposable PostgreSQL. Needs Docker running, not the stack
+test: docker-running ## Run tests against a disposable PostgreSQL and OpenSearch. Needs Docker running, not the stack
 	uv run pytest
 
 test-cov: docker-running ## Run tests with coverage
 	uv run pytest --cov=src --cov-report=html
 
 docker-running:
-	@docker info > /dev/null 2>&1 || { echo "The tests need Docker running, for a disposable PostgreSQL. Start it with: colima start" >&2; exit 1; }
+	@docker info > /dev/null 2>&1 || { echo "The tests need Docker running, for a disposable PostgreSQL and OpenSearch. Start it with: colima start" >&2; exit 1; }
 
 smoke: ## Check a running stack, including every security Deviation
 	uv run pytest tests/stack

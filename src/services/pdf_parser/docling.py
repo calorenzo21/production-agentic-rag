@@ -14,12 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 class DoclingParser:
-    """Docling PDF parser for fallback when GROBID fails."""
+    """Docling PDF parser for scientific document processing."""
 
     def __init__(
         self,
-        max_pages: int = 20,
-        max_file_size_mb: int = 20,
+        max_pages: int,
+        max_file_size_mb: int,
         do_ocr: bool = False,
         do_table_structure: bool = True,
         converter: DocumentConverter | None = None,
@@ -28,8 +28,8 @@ class DoclingParser:
         Initialize DocumentConverter with optimized pipeline options.
 
         Args:
-            max_pages: Maximum number of pages to process (default: 20)
-            max_file_size_mb: Maximum file size in MB (default: 20MB)
+            max_pages: Maximum number of pages to process
+            max_file_size_mb: Maximum file size in MB
             do_ocr: Enable OCR for scanned PDFs (default: False, very slow)
             do_table_structure: Extract table structures (default: True)
             converter: None converts with Docling. Tests pass a converter that fakes it.
@@ -111,8 +111,8 @@ class DoclingParser:
 
     async def parse_pdf(self, pdf_path: Path) -> PdfContent | None:
         """
-        Parse PDF using Docling as fallback parser.
-        Limited to 20 pages to avoid memory issues with large papers.
+        Parse PDF using Docling parser.
+        Limited to max_pages pages to avoid memory issues with large papers.
 
         Docling parses synchronously, for seconds or minutes, so the parse runs in a worker thread and the event loop
         goes on meanwhile.

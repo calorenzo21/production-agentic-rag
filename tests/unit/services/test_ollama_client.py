@@ -23,7 +23,7 @@ async def test_the_health_check_times_out_after_ollama_timeout(silent_ollama: st
     monkeypatch.setenv("OLLAMA_TIMEOUT", "1")
     ollama = OllamaClient(Settings())
 
-    # Well before the 30 seconds the course hard-codes.
+    # Well before the 30 seconds the course's Week 2 hard-codes.
     async with asyncio.timeout(5):
         with pytest.raises(OllamaTimeoutError):
             await ollama.health_check()

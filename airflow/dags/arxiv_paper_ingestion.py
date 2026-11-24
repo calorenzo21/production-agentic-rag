@@ -1,15 +1,15 @@
 from datetime import datetime, timedelta
 
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG, CronTriggerTimetable
+from airflow.sdk import DAG, CronTriggerTimetable, TriggerRule
 
 # Import task functions from separate module
 from arxiv_ingestion.tasks import (
     cleanup_temp_files,
-    create_opensearch_placeholders,
+    fail_the_run,
     fetch_daily_papers,
     generate_daily_report,
-    process_failed_pdfs,
+    index_papers_to_opensearch,
     setup_environment,
 )
 
@@ -29,7 +29,7 @@ default_args = {
 dag = DAG(
     "arxiv_paper_ingestion",
     default_args=default_args,
-    description="Daily arXiv CS.AI paper ingestion and processing pipeline",
+    description="Daily arXiv CS.AI paper pipeline: fetch → store to PostgreSQL → index to OpenSearch",
     # Every day at 6 AM UTC, weekends included. A trigger timetable makes a run's logical date the day it runs,
     # and each run ingests the day four days before, the most recent day arXiv has always finished announcing (see
     # ANNOUNCEMENT_LAG). Missed days are recovered with `airflow backfill create`, whose run of a day also ingests
@@ -37,7 +37,7 @@ dag = DAG(
     schedule=CronTriggerTimetable("0 6 * * *", timezone="UTC"),
     max_active_runs=1,
     catchup=False,
-    tags=["arxiv", "papers", "ingestion", "week2"],
+    tags=["arxiv", "papers", "ingestion", "opensearch", "week3"],
 )
 
 # Task definitions
@@ -53,31 +53,44 @@ fetch_task = PythonOperator(
     dag=dag,
 )
 
-retry_task = PythonOperator(
-    task_id="process_failed_pdfs",
-    python_callable=process_failed_pdfs,
-    dag=dag,
-)
-
+# Indexes the Papers fetch_task stored, by the arXiv IDs it passes on through XCom. It fails when the indexing does, so
+# that Airflow retries it, twice and 30 minutes apart.
 opensearch_task = PythonOperator(
-    task_id="create_opensearch_placeholders",
-    python_callable=create_opensearch_placeholders,
+    task_id="index_papers_to_opensearch",
+    python_callable=index_papers_to_opensearch,
     dag=dag,
 )
 
+# Runs once the indexing has succeeded or failed, after its last retry, so that it shows a failed indexing too. When the
+# Ingestion fails, the indexing does not run, nor does the report.
 report_task = PythonOperator(
     task_id="generate_daily_report",
     python_callable=generate_daily_report,
+    trigger_rule=TriggerRule.ONE_DONE,
     dag=dag,
 )
 
-# Deletes PDFs older than 30 days from the folder the arXiv client downloads them into.
+# Deletes PDFs older than 30 days from the folder the arXiv client downloads them into. It runs whatever happened before
+# it, so that no failure lets the folder grow.
 cleanup_task = PythonOperator(
     task_id="cleanup_temp_files",
     python_callable=cleanup_temp_files,
+    trigger_rule=TriggerRule.ALL_DONE,
+    dag=dag,
+)
+
+# Airflow's watcher: it runs only once another task has failed, and fails the run. A run takes its state from its last
+# tasks, here the cleanup, which runs anyway, so without it a run would succeed after a failed indexing. When no task
+# fails, it is skipped and the run succeeds.
+watcher_task = PythonOperator(
+    task_id="watcher",
+    python_callable=fail_the_run,
+    trigger_rule=TriggerRule.ONE_FAILED,
+    retries=0,
     dag=dag,
 )
 
 # Task dependencies
-# Main pipeline: setup -> fetch -> (retry + opensearch) -> report -> cleanup
-setup_task >> fetch_task >> [retry_task, opensearch_task] >> report_task >> cleanup_task
+# Main pipeline: setup -> fetch -> opensearch -> report -> cleanup, and the watcher after every task
+setup_task >> fetch_task >> opensearch_task >> report_task >> cleanup_task
+[setup_task, fetch_task, opensearch_task, report_task, cleanup_task] >> watcher_task

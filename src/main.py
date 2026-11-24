@@ -7,7 +7,8 @@ import uvicorn
 from fastapi import FastAPI
 from src.config import get_settings
 from src.db.factory import make_database
-from src.routers import papers, ping
+from src.routers import papers, ping, search
+from src.services.opensearch.factory import make_opensearch_client
 
 # Setup logging
 logging.basicConfig(
@@ -31,6 +32,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.database = database
     logger.info("Database connected")
 
+    # Initialize search service
+    opensearch_client = make_opensearch_client()
+    app.state.opensearch_client = opensearch_client
+
+    # Verify OpenSearch connectivity and create index if needed
+    if opensearch_client.health_check():
+        logger.info("OpenSearch connected successfully")
+
+        # Ensure index exists
+        if opensearch_client.create_index(force=False):
+            logger.info("OpenSearch index created")
+        else:
+            logger.info("OpenSearch index already exists")
+
+        # Get index statistics
+        stats = opensearch_client.get_index_stats()
+        logger.info(f"OpenSearch ready: {stats.get('document_count', 0)} documents indexed")
+    else:
+        logger.warning("OpenSearch connection failed - search features will be limited")
+
     # Unlike the course, the API builds neither the arXiv client nor the PDF parser: no endpoint downloads or parses
     # PDFs, and the API image has no Docling.
 
@@ -52,6 +73,7 @@ app = FastAPI(
 # Include routers
 app.include_router(ping.router, prefix="/api/v1")
 app.include_router(papers.router, prefix="/api/v1")
+app.include_router(search.router, prefix="/api/v1")
 
 
 if __name__ == "__main__":

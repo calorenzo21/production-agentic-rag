@@ -6,6 +6,7 @@ from typing import Any
 
 from dateutil import parser as date_parser
 from sqlalchemy.orm import Session
+from src.config import Settings, get_settings
 from src.exceptions import MetadataFetchingException, PDFParsingException, PipelineException
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import ArxivPaper, PaperCreate, split_version
@@ -72,7 +73,8 @@ class MetadataFetcher:
             db_session: Database session (required if store_to_db=True)
 
         Returns:
-            Dictionary with processing results and statistics
+            Dictionary with processing results and statistics, and the arXiv IDs of the Papers stored, without their
+            Versions, which the DAG indexes
         """
 
         results: dict[str, Any] = {
@@ -80,6 +82,7 @@ class MetadataFetcher:
             "pdfs_downloaded": 0,
             "pdfs_parsed": 0,
             "papers_stored": 0,
+            "stored_arxiv_ids": [],
             "errors": [],
             "processing_time": 0,
         }
@@ -109,8 +112,9 @@ class MetadataFetcher:
             # Step 3: Store to database if requested
             if store_to_db and db_session:
                 logger.info("Step 3: Storing papers to database...")
-                stored_count = self._store_papers_to_db(papers, pdf_results.get("parsed_papers", {}), db_session)
-                results["papers_stored"] = stored_count
+                stored_arxiv_ids = self._store_papers_to_db(papers, pdf_results.get("parsed_papers", {}), db_session)
+                results["papers_stored"] = len(stored_arxiv_ids)
+                results["stored_arxiv_ids"] = stored_arxiv_ids
             elif store_to_db:
                 logger.warning("Database storage requested but no session provided")
                 results["errors"].append("Database session not provided for storage")
@@ -319,7 +323,7 @@ class MetadataFetcher:
         papers: list[ArxivPaper],
         parsed_papers: dict[str, ParsedPaper],
         db_session: Session,
-    ) -> int:
+    ) -> list[str]:
         """
         Store papers and parsed content to database with comprehensive content storage.
 
@@ -329,10 +333,10 @@ class MetadataFetcher:
             db_session: Database session
 
         Returns:
-            Number of papers stored successfully
+            The arXiv IDs of the Papers stored successfully, without their Versions
         """
         paper_repo = PaperRepository(db_session)
-        stored_count = 0
+        stored_arxiv_ids: list[str] = []
 
         for paper in papers:
             try:
@@ -372,7 +376,7 @@ class MetadataFetcher:
                 stored_paper = paper_repo.upsert(paper_create)
 
                 if stored_paper:
-                    stored_count += 1
+                    stored_arxiv_ids.append(arxiv_id)
                     content_info = "with parsed content" if parsed_paper else "metadata only"
                     logger.debug(f"Stored paper {paper.arxiv_id} to database ({content_info})")
 
@@ -385,40 +389,43 @@ class MetadataFetcher:
         # Commit all changes
         try:
             db_session.commit()
-            logger.info(f"Committed {stored_count} papers to database with full content storage")
+            logger.info(f"Committed {len(stored_arxiv_ids)} papers to database with full content storage")
         except Exception as e:
             logger.error(f"Failed to commit papers to database: {e}")
             db_session.rollback()
-            stored_count = 0
+            stored_arxiv_ids = []
 
-        return stored_count
+        return stored_arxiv_ids
 
 
 def make_metadata_fetcher(
     arxiv_client: ArxivClient,
     pdf_parser: PDFParserService,
     pdf_cache_dir: Path | None = None,
+    settings: Settings | None = None,
 ) -> MetadataFetcher:
     """
-    Factory function to create MetadataFetcher instance optimized for production.
+    Factory function to create MetadataFetcher instance with configuration settings.
 
-    Configured for typical production workloads (100 papers/day):
-    - 5 concurrent downloads (I/O bound, can handle more)
-    - 3 concurrent parsing operations (CPU intensive, use fewer)
-    - Async pipeline for optimal resource utilization
+    Unlike the course's, it takes no OpenSearch client, as indexing is a step apart from the Ingestion.
 
     Args:
         arxiv_client: Configured ArxivClient
         pdf_parser: Configured PDFParserService (singleton with model caching)
         pdf_cache_dir: Optional PDF cache directory
+        settings: Application settings, whose ARXIV__MAX_CONCURRENT_DOWNLOADS and ARXIV__MAX_CONCURRENT_PARSING set the
+            concurrency (uses get_settings() if None)
 
     Returns:
-        MetadataFetcher instance optimized for production
+        Configured MetadataFetcher instance
     """
+    if settings is None:
+        settings = get_settings()
+
     return MetadataFetcher(
         arxiv_client=arxiv_client,
         pdf_parser=pdf_parser,
         pdf_cache_dir=pdf_cache_dir,
-        max_concurrent_downloads=5,
-        max_concurrent_parsing=1,
+        max_concurrent_downloads=settings.arxiv.max_concurrent_downloads,
+        max_concurrent_parsing=settings.arxiv.max_concurrent_parsing,
     )

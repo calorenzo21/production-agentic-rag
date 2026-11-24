@@ -58,14 +58,25 @@ def test_ports_are_published_on_loopback_only() -> None:
     assert {port["URL"] for port in published} == {"127.0.0.1"}
 
 
-def test_the_api_reaches_the_database_and_native_ollama() -> None:
+def test_the_api_reaches_the_database_opensearch_and_native_ollama() -> None:
     response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok", body
     assert body["services"]["database"]["status"] == "healthy"
+    # OpenSearch only answers over TLS, to a user with a password, so this proves the API connects over TLS as rag_app.
+    assert body["services"]["opensearch"]["status"] == "healthy"
     assert body["services"]["ollama"]["status"] == "healthy"
+
+
+def test_the_api_reports_the_size_of_the_index() -> None:
+    index_name = settings_in("api", "OPENSEARCH__")["OPENSEARCH__INDEX_NAME"]
+    held = httpx.get(f"{OPENSEARCH_URL}/{index_name}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
+
+    response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
+
+    assert response.json()["services"]["opensearch"]["message"] == f"Index '{index_name}' with {held} documents"
 
 
 def test_the_api_lists_the_papers_rag_db_holds() -> None:
@@ -144,11 +155,12 @@ def locked_version(package: str) -> str | None:
     return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
 
 
-def test_airflow_runs_the_docling_version_in_the_lock() -> None:
-    version = installed_version("airflow", "docling")
+@pytest.mark.parametrize("package", ["docling", "opensearch-py"])
+def test_airflow_runs_the_locked_version_of(package: str) -> None:
+    version = installed_version("airflow", package)
 
     assert version is not None
-    assert version == locked_version("docling")
+    assert version == locked_version(package)
 
 
 def can_import(service: str, module: str) -> bool:
@@ -171,9 +183,20 @@ def test_airflow_imports_every_dag() -> None:
     assert errors.returncode == 0, errors.stdout + errors.stderr
 
 
+def environment(container: str) -> dict[str, str]:
+    """The environment a container was created with, which every process in it receives.
+
+    docker inspect reads it from outside, so it also covers the containers without Python, and migrate's, which has exited.
+    It holds secrets, which a failed assertion on it would print.
+    """
+    inspected = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .Config.Env}}", container], check=True, capture_output=True, text=True
+    )
+    return dict(variable.split("=", 1) for variable in json.loads(inspected.stdout))
+
+
 def settings_in(service: str, prefix: str) -> dict[str, str]:
-    code = "import json, os, sys; print(json.dumps({n: v for n, v in os.environ.items() if n.startswith(sys.argv[1])}))"
-    return json.loads(compose("exec", "-T", service, "python", "-c", code, prefix).stdout)
+    return {name: value for name, value in environment(services()[service]["ID"]).items() if name.startswith(prefix)}
 
 
 @pytest.mark.parametrize("prefix", ["ARXIV__", "PDF_PARSER__"])
@@ -185,6 +208,23 @@ def test_airflow_alone_receives_the_ingestion_settings_from_env(prefix: str) -> 
     assert expected
     assert settings_in("airflow", prefix) == expected
     assert settings_in("api", prefix) == {}
+
+
+def test_the_api_and_airflow_alone_receive_the_opensearch_settings() -> None:
+    expected = {name for name in dotenv_values(REPOSITORY / ".env.example") if name.startswith("OPENSEARCH__")}
+
+    assert expected
+    for name, service in services().items():
+        received = {variable for variable in environment(service["ID"]) if variable.startswith("OPENSEARCH__")}
+        assert received == (expected if name in {"api", "airflow"} else set()), name
+
+
+def test_no_container_receives_the_former_flat_opensearch_settings() -> None:
+    former = {"OPENSEARCH_HOST", "OPENSEARCH_USERNAME", "OPENSEARCH_PASSWORD", "OPENSEARCH_CA_CERTS"}
+
+    for name, service in services().items():
+        received = environment(service["ID"]).keys() & former
+        assert not received, name
 
 
 def test_the_week_1_dag_runs() -> None:
@@ -221,6 +261,12 @@ def test_opensearch_refuses_plain_http() -> None:
 
 def test_opensearch_requires_a_password() -> None:
     assert httpx.get(OPENSEARCH_URL, verify=CERTIFICATE_AUTHORITY).status_code == 401
+
+
+# Demo logins from the image's own internal_users.yml. Its demo setup changes admin's password but keeps kibanaserver's.
+@pytest.mark.parametrize("user", ["admin", "kibanaserver"])
+def test_opensearch_rejects_the_demo_login(user: str) -> None:
+    assert httpx.get(OPENSEARCH_URL, auth=(user, user), verify=CERTIFICATE_AUTHORITY).status_code == 401
 
 
 def test_opensearch_certificate_verifies_against_our_authority() -> None:

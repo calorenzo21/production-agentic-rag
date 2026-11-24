@@ -17,12 +17,20 @@ One of a Paper's successive releases on arXiv, numbered v1, v2 and so on. The cu
 _Avoid_: Revision, edition
 
 **Category**:
-An arXiv subject classification that decides which Papers the curator collects, such as `cs.AI`.
+An arXiv subject classification, such as `cs.AI`. Each Paper is listed in one or more Categories.
 _Avoid_: Topic, subject, tag
 
 **Ingestion**:
 The collection of Papers of a Category from arXiv into the curator.
 _Avoid_: Import, sync, crawl, fetch
+
+**Search**:
+Finding the Papers the curator holds that match a researcher's words.
+_Avoid_: Lookup
+
+**Index**:
+A searchable copy of the Papers the curator holds.
+_Avoid_: Search engine, document store
 
 **Week**:
 A stage of the reference course, identified by its tag.

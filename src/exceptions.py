@@ -47,6 +47,14 @@ class OpenSearchException(Exception):
     """Base exception for OpenSearch-related errors."""
 
 
+class PapersNotIndexed(OpenSearchException):
+    """Exception raised when the indexing of Papers fails, with how many Papers it indexed before failing."""
+
+    def __init__(self, message: str, *, papers_indexed: int) -> None:
+        super().__init__(message)
+        self.papers_indexed = papers_indexed
+
+
 # Week 2+: ArXiv API exceptions
 class ArxivAPIException(Exception):
     """Base exception for arXiv API-related errors."""
