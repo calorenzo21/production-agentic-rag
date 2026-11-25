@@ -1,8 +1,14 @@
-"""The indexing of Papers, through the indexing module, from a real PostgreSQL into a real OpenSearch, both disposable."""
+"""
+The indexing of Papers, through the indexing module, from a real PostgreSQL into a real OpenSearch, both disposable,
+with Jina AI faked at its HTTP edge. Time is virtual, so waiting for Jina takes no real time.
+"""
 
+import asyncio
 import re
 import socket
 from datetime import datetime
+from functools import partial
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -14,13 +20,20 @@ from src.exceptions import OpenSearchException, PapersNotIndexed
 from src.models.paper import Paper
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import PaperCreate
+from src.services import paper_indexer
+from src.services.embeddings.factory import make_embeddings_service
 from src.services.opensearch.index_config_hybrid import arxiv_papers_chunks_mapping
 from src.services.paper_indexer import make_paper_indexer
+
+from tests.fake_jina import Failure, FakeJina, own_vector
+from tests.unit.services.virtual_time import VirtualTimePolicy
 
 # A Category OpenSearch rejects, as the mapping makes Categories keywords, and Lucene holds no term over 32766 bytes.
 CATEGORY_TOO_LONG_FOR_A_KEYWORD = "cs." + "A" * 32766
 # A section title OpenSearch rejects for the same reason, as each Chunk's section is a keyword too.
 SECTION_TITLE_TOO_LONG_FOR_A_KEYWORD = "Results " + "A" * 32766
+# A meaning a test makes Jina embed a text as: a unit vector of jina-embeddings-v3's 1024 dimensions, as Jina's are.
+A_MEANING = own_vector("a meaning", 1024)
 
 
 def words(count: int, *, about: str) -> str:
@@ -67,14 +80,14 @@ def created_long_before(database: BaseDatabase, arxiv_id: str) -> None:
         session.commit()
 
 
-def rebuild(database: BaseDatabase) -> dict[str, int]:
+async def rebuild(database: BaseDatabase) -> dict[str, int]:
     """Rebuild the Index, with the settings the environment holds now."""
-    return make_paper_indexer(database, Settings()).rebuild_index()
+    return await make_paper_indexer(database, Settings()).rebuild_index()
 
 
-def index(database: BaseDatabase, arxiv_ids: list[str]) -> dict[str, int]:
+async def index(database: BaseDatabase, arxiv_ids: list[str]) -> dict[str, int]:
     """Index the Papers with these arXiv IDs, with the settings the environment holds now."""
-    return make_paper_indexer(database, Settings()).index_papers(arxiv_ids)
+    return await make_paper_indexer(database, Settings()).index_papers(arxiv_ids)
 
 
 def chunk_index() -> str:
@@ -103,6 +116,21 @@ def create_chunk_index(opensearch: OpenSearch) -> None:
     opensearch.indices.create(index=chunk_index(), body=mapping)
 
 
+@pytest.fixture(scope="module")
+def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
+    """pytest-asyncio runs each test of this module on a VirtualTimeLoop."""
+    return VirtualTimePolicy()
+
+
+@pytest.fixture(autouse=True)
+def indexing_reaching_the_fake_jina(jina: FakeJina, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The indexing module builds its Jina client with the factory, which takes the transport the client reaches Jina
+    through. In every indexing test, it passes the fake Jina's, so that no indexing test reaches the real Jina.
+    """
+    monkeypatch.setattr(paper_indexer, "make_embeddings_service", partial(make_embeddings_service, transport=jina.transport))
+
+
 @pytest.fixture
 def opensearch_down(monkeypatch: pytest.MonkeyPatch) -> None:
     """The settings point at a port nothing listens on, as if OpenSearch were down."""
@@ -113,7 +141,7 @@ def opensearch_down(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENSEARCH__HOST", f"http://{host}:{port}")
 
 
-def test_each_chunk_made_from_a_papers_sections_begins_with_its_title_and_abstract(
+async def test_each_chunk_made_from_a_papers_sections_begins_with_its_title_and_abstract(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     sections = content(
@@ -127,56 +155,56 @@ def test_each_chunk_made_from_a_papers_sections_begins_with_its_title_and_abstra
     )
     hold(database, paper("2411.00001", title="Attention over Retrieved Passages", abstract="We study attention.", **sections))
 
-    rebuild(database)
+    await rebuild(database)
 
     header = "Attention over Retrieved Passages\n\nAbstract: We study attention.\n\n"
     assert [chunk["chunk_text"][: len(header)] for chunk in chunks(opensearch, "2411.00001")] == [header] * 5
 
 
-def test_each_chunk_holds_its_papers_pdf_link(database: BaseDatabase, opensearch: OpenSearch) -> None:
+async def test_each_chunk_holds_its_papers_pdf_link(database: BaseDatabase, opensearch: OpenSearch) -> None:
     two_sections = content(("Method", words(300, about="method")), ("Results", words(300, about="results")))
     hold(database, paper("2411.00001", version=2, **two_sections))
 
-    rebuild(database)
+    await rebuild(database)
 
     assert [chunk.get("pdf_url") for chunk in chunks(opensearch, "2411.00001")] == ["https://arxiv.org/pdf/2411.00001v2"] * 2
 
 
-def test_with_section_based_chunking_off_a_papers_content_is_chunked_into_plain_word_windows(
+async def test_with_section_based_chunking_off_a_papers_content_is_chunked_into_plain_word_windows(
     database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CHUNKING__SECTION_BASED", "false")
     sections = [{"title": "Method", "content": words(300, about="method")}]
     hold(database, paper("2411.00001", raw_text=words(700, about="content"), sections=sections, pdf_processed=True))
 
-    rebuild(database)
+    await rebuild(database)
 
     # Windows of 600 words that overlap by 100: the Content's first 600 words, then its last 200, with no section.
     windows = [(chunk["section_title"], chunk["chunk_word_count"]) for chunk in chunks(opensearch, "2411.00001")]
     assert windows == [(None, 600), (None, 200)]
 
 
-def test_after_a_rebuild_the_index_holds_every_paper_postgresql_holds_and_the_rebuild_counts_their_papers_and_chunks(
+async def test_after_a_rebuild_the_index_holds_every_paper_postgresql_holds_and_the_rebuild_counts_their_papers_and_chunks(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     two_sections = content(("Method", words(300, about="method")), ("Results", words(300, about="results")))
     hold(database, paper("2411.00001", version=2, **two_sections), paper("2411.00002"), paper("2411.00003"))
 
-    counts = rebuild(database)
+    counts = await rebuild(database)
 
     # A Chunk for each of the first Paper's two sections, and one for each Paper without Content, its title and abstract.
     assert counts == {"papers_held": 3, "papers_indexed": 3, "chunks_indexed": 4}
     assert indexed_papers(opensearch) == ["2411.00001", "2411.00002", "2411.00003"]
 
 
-def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_one_with_the_courses_mapping_and_faiss(
+async def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_one_with_the_courses_mapping_and_faiss(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     # The chunk index as a different mapping created it, where the title was a keyword rather than text.
     opensearch.indices.create(index=chunk_index(), body={"mappings": {"properties": {"title": {"type": "keyword"}}}})
     hold(database, paper("2411.00001"))
 
-    rebuild(database)
+    await rebuild(database)
 
     mapping = opensearch.indices.get_mapping(index=chunk_index())[chunk_index()]["mappings"]
     assert mapping == arxiv_papers_chunks_mapping(vector_dimension=1024, vector_space_type="cosinesimil")["mappings"]
@@ -189,19 +217,19 @@ def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_one_wit
     }
 
 
-def test_a_rebuild_creates_the_chunk_index_with_vectors_of_the_dimension_and_space_type_the_settings_give(
+async def test_a_rebuild_creates_the_chunk_index_with_vectors_of_the_dimension_and_space_type_the_settings_give(
     database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENSEARCH__VECTOR_DIMENSION", "8")
     monkeypatch.setenv("OPENSEARCH__VECTOR_SPACE_TYPE", "l2")
 
-    rebuild(database)
+    await rebuild(database)
 
     embedding = opensearch.indices.get_mapping(index=chunk_index())[chunk_index()]["mappings"]["properties"]["embedding"]
     assert (embedding["dimension"], embedding["method"]["space_type"]) == (8, "l2")
 
 
-def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_indexing_a_paper(
+async def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_indexing_a_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     # The chunk index as an alias of another index, which OpenSearch refuses to delete through the alias.
@@ -209,17 +237,17 @@ def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_indexing_a
     hold(database, paper("2411.00001"))
 
     with pytest.raises(OpenSearchException, match=chunk_index()):
-        rebuild(database)
+        await rebuild(database)
 
     assert opensearch.count(index="arxiv-papers-chunks-v1")["count"] == 0
 
 
-def test_a_paper_held_without_content_and_one_with_empty_content_are_each_indexed_as_one_chunk_their_title_and_abstract(
+async def test_a_paper_held_without_content_and_one_with_empty_content_are_each_indexed_as_one_chunk_their_title_and_abstract(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     hold(database, paper("2411.00001", raw_text=None), paper("2411.00002", raw_text="", sections=[], pdf_processed=True))
 
-    rebuild(database)
+    await rebuild(database)
 
     arxiv_ids = ["2411.00001", "2411.00002"]
     texts = {arxiv_id: [chunk["chunk_text"] for chunk in chunks(opensearch, arxiv_id)] for arxiv_id in arxiv_ids}
@@ -229,19 +257,19 @@ def test_a_paper_held_without_content_and_one_with_empty_content_are_each_indexe
     }
 
 
-def test_indexing_given_arxiv_ids_indexes_exactly_those_papers_and_no_other_paper_the_curator_holds(
+async def test_indexing_given_arxiv_ids_indexes_exactly_those_papers_and_no_other_paper_the_curator_holds(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002"), paper("2411.00003"))
 
-    counts = index(database, ["2411.00001", "2411.00003"])
+    counts = await index(database, ["2411.00001", "2411.00003"])
 
     assert counts == {"papers_to_index": 2, "papers_indexed": 2, "chunks_indexed": 2}
     assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_with_no_chunk_of_its_old_version_left(
+async def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_with_no_chunk_of_its_old_version_left(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
@@ -253,41 +281,41 @@ def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_with_n
     )
     hold(database, paper("2411.00001", version=1, **first_version))
     created_long_before(database, "2411.00001")
-    index(database, ["2411.00001"])
+    await index(database, ["2411.00001"])
     # Today's Ingestion stores its new Version, with one section, which updates the Paper's row.
     hold(database, paper("2411.00001", version=2, **content(("Revised Method", words(300, about="revision")))))
 
-    index(database, ["2411.00001"])
+    await index(database, ["2411.00001"])
 
     assert [chunk["section_title"] for chunk in chunks(opensearch, "2411.00001")] == ["Revised Method"]
 
 
-def test_when_opensearch_rejects_a_chunk_indexing_given_arxiv_ids_indexes_the_other_papers_then_fails_naming_its_paper(
+async def test_when_opensearch_rejects_a_chunk_indexing_given_arxiv_ids_indexes_the_other_papers_then_fails_naming_its_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
 
     with pytest.raises(PapersNotIndexed, match=re.escape("2411.00002")):
-        index(database, ["2411.00001", "2411.00002", "2411.00003"])
+        await index(database, ["2411.00001", "2411.00002", "2411.00003"])
 
     assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_when_opensearch_rejects_a_chunk_the_failure_counts_the_papers_indexed(
+async def test_when_opensearch_rejects_a_chunk_the_failure_counts_the_papers_indexed(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
 
     with pytest.raises(PapersNotIndexed) as failure:
-        index(database, ["2411.00001", "2411.00002", "2411.00003"])
+        await index(database, ["2411.00001", "2411.00002", "2411.00003"])
 
     # The daily report shows it, as a failed task returns no counts.
     assert failure.value.papers_indexed == 2
 
 
-def test_when_opensearch_rejects_one_of_a_papers_chunks_the_failure_counts_those_it_indexed(
+async def test_when_opensearch_rejects_one_of_a_papers_chunks_the_failure_counts_those_it_indexed(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
@@ -298,40 +326,149 @@ def test_when_opensearch_rejects_one_of_a_papers_chunks_the_failure_counts_those
 
     # The first Paper's one Chunk, and the second Paper's Chunk OpenSearch accepted, which the Index now holds.
     with pytest.raises(PapersNotIndexed, match=re.escape("as 2 Chunks, but could not index 2411.00002")):
-        index(database, ["2411.00001", "2411.00002"])
+        await index(database, ["2411.00001", "2411.00002"])
 
 
-def test_when_opensearch_rejects_a_chunk_a_rebuild_indexes_the_other_papers_then_fails_naming_its_paper(
+async def test_when_opensearch_rejects_a_chunk_a_rebuild_indexes_the_other_papers_then_fails_naming_its_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
 
     with pytest.raises(PapersNotIndexed, match=re.escape("2411.00002")):
-        rebuild(database)
+        await rebuild(database)
 
     assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_with_the_chunk_index_missing_indexing_given_arxiv_ids_fails_without_indexing_a_paper_or_creating_the_index(
+async def test_with_the_chunk_index_missing_indexing_given_arxiv_ids_fails_without_indexing_a_paper_or_creating_the_index(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     hold(database, paper("2411.00001"))
 
     with pytest.raises(PapersNotIndexed, match=chunk_index()):
-        index(database, ["2411.00001"])
+        await index(database, ["2411.00001"])
 
     assert not opensearch.indices.exists(index=chunk_index())
 
 
-def test_with_opensearch_not_answering_indexing_given_arxiv_ids_fails(database: BaseDatabase, opensearch_down: None) -> None:
+async def test_with_opensearch_not_answering_indexing_given_arxiv_ids_fails(
+    database: BaseDatabase, opensearch_down: None
+) -> None:
     hold(database, paper("2411.00001"))
 
     with pytest.raises(PapersNotIndexed):
-        index(database, ["2411.00001"])
+        await index(database, ["2411.00001"])
 
 
-def test_with_opensearch_not_answering_a_rebuild_fails(database: BaseDatabase, opensearch_down: None) -> None:
+async def test_with_opensearch_not_answering_a_rebuild_fails(database: BaseDatabase, opensearch_down: None) -> None:
     hold(database, paper("2411.00001"))
 
     with pytest.raises(PapersNotIndexed):
-        rebuild(database)
+        await rebuild(database)
+
+
+async def test_a_paper_whose_embedding_keeps_failing_does_not_stop_the_others_and_indexing_given_arxiv_ids_fails_naming_it(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"), paper("2411.00002"), paper("2411.00003"))
+    # Each of a Paper's Chunks begins with its title, which holds its arXiv ID.
+    jina.keeps_failing(Failure.SERVER_ERROR, on="2411.00002")
+
+    with pytest.raises(PapersNotIndexed, match=re.escape("could not index 2411.00002")):
+        await index(database, ["2411.00001", "2411.00002", "2411.00003"])
+
+    assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
+
+
+async def test_embedding_is_retried_through_rate_limits_server_errors_and_timeouts_and_the_paper_is_then_indexed(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    jina.embeds("2411.00001", as_vector=A_MEANING)
+    jina.fails_next(Failure.RATE_LIMIT, Failure.SERVER_ERROR, Failure.TIMEOUT)
+
+    await index(database, ["2411.00001"])
+
+    # Its one Chunk, its title and abstract, with the embedding Jina made of it and the model that made it.
+    embeddings = [(chunk["embedding"], chunk["embedding_model"]) for chunk in chunks(opensearch, "2411.00001")]
+    assert embeddings == [(A_MEANING, "jina-embeddings-v3")]
+
+
+async def test_embedding_waits_out_a_rate_limit_that_lasts_a_minute_and_the_paper_is_then_indexed(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    # As when a free key has spent its 100,000 tokens for the minute.
+    jina.rate_limits_for(60)
+
+    await index(database, ["2411.00001"])
+
+    assert indexed_papers(opensearch) == ["2411.00001"]
+
+
+async def test_after_a_rate_limit_embedding_asks_jina_again_only_once_the_wait_jina_asked_for_is_over(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    jina.rate_limits_for(45, saying_how_long=True)
+
+    await index(database, ["2411.00001"])
+
+    # Jina rate-limited the first request, saying to wait 45 seconds, and answered the next, which came then.
+    first, *later = jina.request_times
+    assert [time - first for time in later] == [45]
+
+
+async def test_with_an_invalid_jina_key_indexing_fails_each_paper_at_its_first_call_to_jina_without_retrying(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"), paper("2411.00002"))
+    jina.keeps_failing(Failure.INVALID_KEY)
+
+    with pytest.raises(PapersNotIndexed):
+        await index(database, ["2411.00001", "2411.00002"])
+
+    # One call for each Paper, as no retry would make the key valid.
+    assert len(jina.requests) == 2
+
+
+async def test_a_rebuild_closes_its_jina_client_when_it_ends(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    hold(database, paper("2411.00001"))
+
+    await rebuild(database)
+
+    assert jina.closed
+
+
+async def test_indexing_given_arxiv_ids_closes_its_jina_client_when_it_ends_even_in_failure(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    jina.keeps_failing(Failure.INVALID_KEY)
+
+    with pytest.raises(PapersNotIndexed):
+        await index(database, ["2411.00001"])
+
+    assert jina.closed
+
+
+async def test_embedding_waits_no_more_than_a_minute_at_a_time_whatever_jina_asks(
+    database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    # Longer than the minute over which Jina counts a free key's tokens, as a Retry-After header gone wrong might ask.
+    jina.rate_limits_for(90, saying_how_long=True)
+
+    await index(database, ["2411.00001"])
+
+    assert indexed_papers(opensearch) == ["2411.00001"]
+    assert max(later - earlier for earlier, later in pairwise(jina.request_times)) <= 60

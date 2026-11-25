@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from src.exceptions import PapersNotIndexed
@@ -43,7 +44,8 @@ def index_papers_to_opensearch(**context):
         # Get services
         _arxiv_client, _pdf_parser, database, _metadata_fetcher, opensearch_client = get_cached_services()
 
-        counts = make_paper_indexer(database).index_papers(stored_arxiv_ids)
+        # The indexing embeds the Chunks with Jina AI's async client, so it runs on an event loop, as the course's does.
+        counts = asyncio.run(make_paper_indexer(database).index_papers(stored_arxiv_ids))
     except Exception as e:
         error_msg = f"OpenSearch indexing failed: {e!s}"
         logger.error(error_msg)

@@ -1,5 +1,6 @@
 """Jina AI's embeddings API over HTTP, faked for the Jina client, which the indexing tests and the API tests share."""
 
+import asyncio
 import hashlib
 import json
 import math
@@ -43,8 +44,9 @@ class _Transport(httpx.MockTransport):
 class FakeJina:
     """
     Jina AI's embeddings API over HTTP. It embeds each text as the vector the test chose for the texts that contain some
-    words, or else as the text's own vector, the same every time. It fails the requests the test makes it fail, and
-    keeps the body of each request it received, failed or not. It accepts any key, as no test has a real one.
+    words, or else as the text's own vector, the same every time. It fails the requests the test makes it fail, or
+    rate-limits every request for as long as the test says, and keeps the body and time of each request it received,
+    failed or not. It accepts any key, as no test has a real one.
     """
 
     def __init__(self) -> None:
@@ -53,7 +55,12 @@ class FakeJina:
         self.next_failures: deque[Failure] = deque()
         # The failures of every request from now on, or only of those embedding a text that contains the words given.
         self.lasting_failures: list[tuple[Failure, str | None]] = []
+        # Until when, on the event loop's clock, every request is rate-limited, and whether each rate limit says how long.
+        self.rate_limited_until: float | None = None
+        self.says_how_long = False
         self.requests: list[dict[str, Any]] = []
+        # When each request came, on the event loop's clock.
+        self.request_times: list[float] = []
         self.transport = _Transport(self._respond)
 
     def embeds(self, words: str, *, as_vector: Sequence[float]) -> None:
@@ -68,6 +75,15 @@ class FakeJina:
         """Fail every request from now on, or only those embedding a text that contains the words given."""
         self.lasting_failures.append((failure, on))
 
+    def rate_limits_for(self, seconds: float, *, saying_how_long: bool = False) -> None:
+        """
+        Rate-limit every request for so many seconds from now, on the event loop's clock, which the tests can make
+        virtual, as Jina does once a key has spent its tokens for the minute. Saying how long, each rate limit tells the
+        whole seconds left in its Retry-After header, which Jina's documentation does not promise.
+        """
+        self.rate_limited_until = asyncio.get_running_loop().time() + seconds
+        self.says_how_long = saying_how_long
+
     @property
     def closed(self) -> bool:
         """Whether a client that reaches it through its transport was closed, which closes the client's connections."""
@@ -78,13 +94,17 @@ class FakeJina:
             return httpx.Response(404, json={"detail": "Not Found"})
         body = json.loads(request.content)
         self.requests.append(body)
+        self.request_times.append(asyncio.get_running_loop().time())
         texts: list[str] = body["input"]
-        failure = self._failure_for(texts)
+        rate_limit_left = self._rate_limit_left()
+        failure = Failure.RATE_LIMIT if rate_limit_left > 0 else self._failure_for(texts)
         if failure is Failure.TIMEOUT:
             raise httpx.ReadTimeout("Jina did not answer in time", request=request)
         if failure is not None:
             status, detail = FAILED_RESPONSES[failure]
-            return httpx.Response(status, json={"detail": detail})
+            says_how_long = rate_limit_left > 0 and self.says_how_long
+            headers = {"Retry-After": str(math.ceil(rate_limit_left))} if says_how_long else {}
+            return httpx.Response(status, json={"detail": detail}, headers=headers)
         tokens = sum(len(text.split()) for text in texts)
         # jina-embeddings-v3 makes vectors of 1024 dimensions unless asked for fewer.
         dimensions = body.get("dimensions", 1024)
@@ -100,6 +120,12 @@ class FakeJina:
                 ],
             },
         )
+
+    def _rate_limit_left(self) -> float:
+        """How many seconds are left of the rate limit, on the event loop's clock: none once it is over."""
+        if self.rate_limited_until is None:
+            return 0
+        return self.rate_limited_until - asyncio.get_running_loop().time()
 
     def _failure_for(self, texts: list[str]) -> Failure | None:
         if self.next_failures:

@@ -1,5 +1,7 @@
 """Rebuilds the Index from every Paper the curator holds, as Chunks. `make reindex` runs it in the API container."""
 
+import asyncio
+
 from src.db.factory import make_database
 from src.services.paper_indexer import make_paper_indexer
 
@@ -7,7 +9,7 @@ from src.services.paper_indexer import make_paper_indexer
 def main() -> None:
     database = make_database()
     try:
-        counts = make_paper_indexer(database).rebuild_index()
+        counts = asyncio.run(make_paper_indexer(database).rebuild_index())
     finally:
         database.teardown()
     print(
