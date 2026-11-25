@@ -15,3 +15,5 @@ DAGs from later Weeks of the course will not work unchanged: they need Airflow 3
 From Week 2 the same rule covers Docling and Pydantic, which the ingestion code in `src/` also uses inside Airflow. The application and the Airflow image pin the same version of each, Airflow's constraints decide where they set one, and `make smoke` fails if any of them differ.
 
 From Week 3 it also covers opensearch-py, as Airflow and the API both run the OpenSearch client in `src/`. Airflow's constraints set its version.
+
+From Week 4 it also covers httpx, which Airflow runs in two clients in `src/`: the arXiv client, since Week 2, and the embeddings client, which the API runs too. Airflow's constraints set its version.

@@ -155,7 +155,7 @@ def locked_version(package: str) -> str | None:
     return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
 
 
-@pytest.mark.parametrize("package", ["docling", "opensearch-py"])
+@pytest.mark.parametrize("package", ["docling", "opensearch-py", "httpx"])
 def test_airflow_runs_the_locked_version_of(package: str) -> None:
     version = installed_version("airflow", package)
 
