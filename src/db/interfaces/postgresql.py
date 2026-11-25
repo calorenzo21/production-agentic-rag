@@ -2,25 +2,13 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from src.db.interfaces.base import BaseDatabase
+from src.schemas.database.config import PostgreSQLSettings
 
 logger = logging.getLogger(__name__)
-
-
-class PostgreSQLSettings(BaseSettings):
-    """PostgreSQL configuration settings."""
-
-    database_url: str = Field(default="postgresql://rag_user@localhost:5432/rag_db", description="PostgreSQL database URL")
-    echo_sql: bool = Field(default=False, description="Enable SQL query logging")
-    pool_size: int = Field(default=20, description="Database connection pool size")
-    max_overflow: int = Field(default=0, description="Maximum pool overflow")
-
-    model_config = SettingsConfigDict(env_prefix="POSTGRES_")
 
 
 class PostgreSQLDatabase(BaseDatabase):

@@ -3,15 +3,13 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, CronTriggerTimetable, TriggerRule
 
-# Import task functions from separate module
-from arxiv_ingestion.tasks import (
-    cleanup_temp_files,
-    fail_the_run,
-    fetch_daily_papers,
-    generate_daily_report,
-    index_papers_to_opensearch,
-    setup_environment,
-)
+# Import task functions from modular structure
+from arxiv_ingestion.cleanup import cleanup_temp_files
+from arxiv_ingestion.fetching import fetch_daily_papers
+from arxiv_ingestion.indexing import index_papers_to_opensearch
+from arxiv_ingestion.reporting import generate_daily_report
+from arxiv_ingestion.setup import setup_environment
+from arxiv_ingestion.watcher import fail_the_run
 
 # Default DAG arguments
 default_args = {
