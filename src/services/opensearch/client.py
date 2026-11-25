@@ -1,13 +1,12 @@
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
-from opensearchpy import OpenSearch
+from opensearchpy import OpenSearch, helpers
 from opensearchpy.exceptions import NotFoundError, RequestError, TransportError
 from src.config import Settings, get_settings
 from src.exceptions import OpenSearchException
 
-from .index_config import ARXIV_PAPERS_INDEX, ARXIV_PAPERS_MAPPING
+from .index_config_hybrid import arxiv_papers_chunks_mapping
 from .query_builder import PaperQueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ class OpenSearchClient:
         """
         self.host = host
         self.settings = settings or get_settings()
-        self.index_name = self.settings.opensearch.index_name
+        self.index_name = f"{self.settings.opensearch.index_name}-{self.settings.opensearch.chunk_index_suffix}"
         # The course's OpenSearch has no security, so its client connects over plain HTTP without a login. This one
         # requires TLS, which an https host turns on: the client verifies OpenSearch's certificate against our CA and
         # logs in as rag_app. The tests' disposable OpenSearch has no security, so they reach it through an http host.
@@ -42,23 +41,28 @@ class OpenSearchClient:
             ca_certs=self.settings.opensearch.ca_certs,
             http_compress=True,
         )
-        # Use configured index name, fall back to constant if not set
-        self.index_name = self.settings.opensearch.index_name or ARXIV_PAPERS_INDEX
         logger.info(f"OpenSearch client initialized with host: {host}")
 
-    def create_index(self, force: bool = False) -> bool:
-        """Create the arxiv-papers index with proper mappings.
+    def setup_indices(self, force: bool = False) -> dict[str, bool]:
+        """Setup the hybrid search index."""
+        results = {}
+        results["hybrid_index"] = self._create_hybrid_index(force)
+        return results
 
-        :param force: If True, delete existing index before creating
-        :type force: bool
-        :returns: True if index was created, False if it already exists
-        :rtype: bool
+    def _create_hybrid_index(self, force: bool = False) -> bool:
+        """Create hybrid index for all search types (BM25, vector, hybrid).
+
+        Unlike the course's, it reports a failure by returning False, as Week 3's creation of the Index did, rather than
+        raising it, so that the API still starts when OpenSearch fails it (README.md).
+
+        :param force: If True, recreate index even if it exists
+        :returns: True if created, False if it already exists or could not be created
         """
         try:
             # Check if index exists
             if self.client.indices.exists(index=self.index_name):
                 if force:
-                    logger.info(f"Deleting existing index: {self.index_name}")
+                    logger.info(f"Deleting existing hybrid index: {self.index_name}")
                     self.client.indices.delete(index=self.index_name)
                 else:
                     self._wait_for_existing_index()
@@ -66,7 +70,11 @@ class OpenSearchClient:
 
             # Create index with mappings
             try:
-                response = self.client.indices.create(index=self.index_name, body=ARXIV_PAPERS_MAPPING)
+                mapping = arxiv_papers_chunks_mapping(
+                    vector_dimension=self.settings.opensearch.vector_dimension,
+                    vector_space_type=self.settings.opensearch.vector_space_type,
+                )
+                response = self.client.indices.create(index=self.index_name, body=mapping)
             except RequestError as e:
                 # The API's 4 workers start at once, so another may have created the Index since the check above.
                 if e.error != "resource_already_exists_exception":
@@ -75,17 +83,17 @@ class OpenSearchClient:
                 return False
 
             if response.get("acknowledged"):
-                logger.info(f"Successfully created index: {self.index_name}")
+                logger.info(f"Created hybrid index: {self.index_name}")
                 return True
             else:
-                logger.error(f"Failed to create index: {response}")
+                logger.error(f"Failed to create hybrid index: {response}")
                 return False
 
         except RequestError as e:
-            logger.error(f"Error creating index: {e}")
+            logger.error(f"Error creating hybrid index: {e}")
             return False
         except Exception as e:
-            logger.error(f"Unexpected error creating index: {e}")
+            logger.error(f"Unexpected error creating hybrid index: {e}")
             return False
 
     def _wait_for_existing_index(self) -> None:
@@ -104,67 +112,49 @@ class OpenSearchClient:
         except TransportError as e:
             raise OpenSearchException(str(e)) from e
 
-    def index_paper(self, paper_data: dict[str, Any]) -> bool:
-        """Index a single paper document.
+    def bulk_index_chunks(self, chunks: list[dict[str, Any]]) -> dict[str, int]:
+        """Bulk index multiple chunks.
 
-        :param paper_data: Paper data to index
-        :type paper_data: Dict[str, Any]
-        :returns: True if successful, False otherwise
-        :rtype: bool
+        Unlike the course's, it goes on past a Chunk OpenSearch rejects, and counts it. The course's raises at the first
+        one, so its count of failed Chunks is always 0 (README.md). It still raises when OpenSearch does not answer.
+
+        :param chunks: The Chunks' entries
+        :returns: Statistics
         """
         try:
-            # Ensure required fields
-            if "arxiv_id" not in paper_data:
-                logger.error("Missing arxiv_id in paper data")
-                return False
+            actions = [{"_index": self.index_name, "_source": chunk} for chunk in chunks]
 
-            # Add timestamps if not present
-            if "created_at" not in paper_data:
-                paper_data["created_at"] = datetime.now(UTC).isoformat()
-            if "updated_at" not in paper_data:
-                paper_data["updated_at"] = datetime.now(UTC).isoformat()
+            success, failed = helpers.bulk(self.client, actions, refresh=True, raise_on_error=False)
 
-            # Convert authors list to string if needed
-            if isinstance(paper_data.get("authors"), list):
-                paper_data["authors"] = ", ".join(paper_data["authors"])
-
-            # Index the document
-            response = self.client.index(
-                index=self.index_name,
-                id=paper_data["arxiv_id"],
-                body=paper_data,
-                refresh=True,  # Make it immediately searchable
-            )
-
-            if response.get("result") in ["created", "updated"]:
-                logger.debug(f"Indexed paper: {paper_data['arxiv_id']}")
-                return True
-            else:
-                logger.error(f"Failed to index paper: {response}")
-                return False
+            for failure in failed:
+                # Each failure is keyed on its action, an index here, and also holds the whole Chunk, which is left out.
+                (result,) = failure.values()
+                logger.error(f"OpenSearch rejected a Chunk: {result.get('error')}")
+            logger.info(f"Bulk indexed {success} chunks, {len(failed)} failed")
+            return {"success": success, "failed": len(failed)}
 
         except Exception as e:
-            logger.error(f"Error indexing paper {paper_data.get('arxiv_id', 'unknown')}: {e}")
-            return False
+            logger.error(f"Bulk chunk indexing error: {e}")
+            raise
 
-    def bulk_index_papers(self, papers: list[dict[str, Any]]) -> dict[str, int]:
-        """Bulk index multiple papers.
+    def delete_paper_chunks(self, arxiv_id: str) -> bool:
+        """Delete all chunks for a specific paper.
 
-        :param papers: List of paper data to index
-        :type papers: List[Dict[str, Any]]
-        :returns: Dictionary with counts of successful and failed indexing
-        :rtype: Dict[str, int]
+        :param arxiv_id: ArXiv ID of the paper
+        :returns: True if deletion was successful
         """
-        results = {"success": 0, "failed": 0}
+        try:
+            response = self.client.delete_by_query(
+                index=self.index_name, body={"query": {"term": {"arxiv_id": arxiv_id}}}, refresh=True
+            )
 
-        for paper in papers:
-            if self.index_paper(paper):
-                results["success"] += 1
-            else:
-                results["failed"] += 1
+            deleted: int = response.get("deleted", 0)
+            logger.info(f"Deleted {deleted} chunks for paper {arxiv_id}")
+            return deleted > 0
 
-        logger.info(f"Bulk indexing complete: {results['success']} successful, {results['failed']} failed")
-        return results
+        except Exception as e:
+            logger.error(f"Error deleting chunks: {e}")
+            return False
 
     def search_papers(
         self,

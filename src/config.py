@@ -58,6 +58,18 @@ class PDFParserSettings(DefaultSettings):
     do_table_structure: bool = True
 
 
+class ChunkingSettings(DefaultSettings):
+    """Text chunking settings."""
+
+    # Without its prefix, it would also read unprefixed variables such as CHUNK_SIZE.
+    model_config = SettingsConfigDict(env_prefix="CHUNKING__")
+
+    chunk_size: int = 600  # Target words per chunk
+    overlap_size: int = 100  # Words to overlap between chunks
+    min_chunk_size: int = 100  # Minimum words for a valid chunk
+    section_based: bool = True  # Use section-based chunking when available
+
+
 class OpenSearchSettings(DefaultSettings):
     """OpenSearch client settings."""
 
@@ -66,7 +78,12 @@ class OpenSearchSettings(DefaultSettings):
 
     host: str = "https://localhost:9200"
     index_name: str = "arxiv-papers"
-    max_text_size: int = 1000000
+    chunk_index_suffix: str = "chunks"  # The chunk index is the index name followed by it: arxiv-papers-chunks
+
+    # Vector search settings. The course never reads them, as its chunk index's mapping hard-codes both (README.md).
+    vector_dimension: int = 1024  # Jina embeddings dimension
+    vector_space_type: str = "cosinesimil"  # cosinesimil, l2, innerproduct
+
     # The course's OpenSearch needs neither TLS nor a login. This one requires both, as the rag_app user.
     username: str = "rag_app"
     password: str = ""
@@ -100,6 +117,9 @@ class Settings(DefaultSettings):
 
     # PDF parser settings
     pdf_parser: PDFParserSettings = Field(default_factory=PDFParserSettings)
+
+    # Text chunking settings
+    chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 
     # OpenSearch settings
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)

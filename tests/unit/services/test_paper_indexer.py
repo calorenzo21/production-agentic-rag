@@ -14,11 +14,27 @@ from src.exceptions import OpenSearchException, PapersNotIndexed
 from src.models.paper import Paper
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import PaperCreate
-from src.services.opensearch.index_config import ARXIV_PAPERS_MAPPING
+from src.services.opensearch.index_config_hybrid import arxiv_papers_chunks_mapping
 from src.services.paper_indexer import make_paper_indexer
 
 # A Category OpenSearch rejects, as the mapping makes Categories keywords, and Lucene holds no term over 32766 bytes.
 CATEGORY_TOO_LONG_FOR_A_KEYWORD = "cs." + "A" * 32766
+# A section title OpenSearch rejects for the same reason, as each Chunk's section is a keyword too.
+SECTION_TITLE_TOO_LONG_FOR_A_KEYWORD = "Results " + "A" * 32766
+
+
+def words(count: int, *, about: str) -> str:
+    """A text of so many words, each its topic followed by its position, so that no other text in a test shares them."""
+    return " ".join(f"{about}{position}" for position in range(count))
+
+
+def content(*sections: tuple[str, str]) -> dict[str, Any]:
+    """A Paper's Content as the Ingestion stores it when Docling parses its PDF into these sections, each a title and text."""
+    return {
+        "raw_text": "\n\n".join(f"{title}\n\n{text}" for title, text in sections),
+        "sections": [{"title": title, "content": text} for title, text in sections],
+        "pdf_processed": True,
+    }
 
 
 def paper(arxiv_id: str, *, version: int = 1, **fields: Any) -> PaperCreate:
@@ -61,25 +77,30 @@ def index(database: BaseDatabase, arxiv_ids: list[str]) -> dict[str, int]:
     return make_paper_indexer(database, Settings()).index_papers(arxiv_ids)
 
 
-def index_name() -> str:
-    return Settings().opensearch.index_name
+def chunk_index() -> str:
+    """The chunk index: the index name followed by the chunk index's suffix, arxiv-papers-chunks by default."""
+    settings = Settings().opensearch
+    return f"{settings.index_name}-{settings.chunk_index_suffix}"
 
 
-def create_index(opensearch: OpenSearch) -> None:
-    """Create the Index with the course's mapping, as the DAG's setup task does before each day's Ingestion."""
-    opensearch.indices.create(index=index_name(), body=ARXIV_PAPERS_MAPPING)
+def chunks(opensearch: OpenSearch, arxiv_id: str) -> list[dict[str, Any]]:
+    """The Chunks the Index holds of the Paper with this arXiv ID, in the order of their positions."""
+    response = opensearch.search(
+        index=chunk_index(), body={"query": {"term": {"arxiv_id": arxiv_id}}, "sort": [{"chunk_index": "asc"}], "size": 100}
+    )
+    return [hit["_source"] for hit in response["hits"]["hits"]]
 
 
-def entry_ids(opensearch: OpenSearch) -> list[str]:
-    """The arXiv IDs the Index's entries are keyed on, in order."""
-    response = opensearch.search(index=index_name(), body={"query": {"match_all": {}}, "size": 100})
-    return sorted(hit["_id"] for hit in response["hits"]["hits"])
+def indexed_papers(opensearch: OpenSearch) -> list[str]:
+    """The arXiv IDs of the Papers the Index holds Chunks of, in order."""
+    response = opensearch.search(index=chunk_index(), body={"query": {"match_all": {}}, "size": 1000})
+    return sorted({hit["_source"]["arxiv_id"] for hit in response["hits"]["hits"]})
 
 
-def found_by_title(opensearch: OpenSearch, words: str) -> list[str]:
-    """The arXiv IDs of the entries whose title matches the words."""
-    response = opensearch.search(index=index_name(), body={"query": {"match": {"title": words}}})
-    return [hit["_id"] for hit in response["hits"]["hits"]]
+def create_chunk_index(opensearch: OpenSearch) -> None:
+    """Create the chunk index with the course's mapping, as the DAG's setup task does before each day's Ingestion."""
+    mapping = arxiv_papers_chunks_mapping(vector_dimension=1024, vector_space_type="cosinesimil")
+    opensearch.indices.create(index=chunk_index(), body=mapping)
 
 
 @pytest.fixture
@@ -92,108 +113,171 @@ def opensearch_down(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENSEARCH__HOST", f"http://{host}:{port}")
 
 
-def test_after_a_rebuild_the_index_holds_as_many_papers_as_postgresql_one_entry_per_paper(
+def test_each_chunk_made_from_a_papers_sections_begins_with_its_title_and_abstract(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    hold(database, paper("2411.00001", version=2), paper("2411.00002"), paper("2411.00003"))
+    sections = content(
+        # Under 100 words each, so combined into one Chunk.
+        ("Introduction", words(50, about="motivation")),
+        ("Related Work", words(60, about="prior")),
+        # From 100 to 800 words, so one Chunk.
+        ("Method", words(300, about="method")),
+        # Over 800 words, so split into windows of 600 words that overlap by 100: three Chunks.
+        ("Experiments", words(1500, about="experiment")),
+    )
+    hold(database, paper("2411.00001", title="Attention over Retrieved Passages", abstract="We study attention.", **sections))
+
+    rebuild(database)
+
+    header = "Attention over Retrieved Passages\n\nAbstract: We study attention.\n\n"
+    assert [chunk["chunk_text"][: len(header)] for chunk in chunks(opensearch, "2411.00001")] == [header] * 5
+
+
+def test_each_chunk_holds_its_papers_pdf_link(database: BaseDatabase, opensearch: OpenSearch) -> None:
+    two_sections = content(("Method", words(300, about="method")), ("Results", words(300, about="results")))
+    hold(database, paper("2411.00001", version=2, **two_sections))
+
+    rebuild(database)
+
+    assert [chunk.get("pdf_url") for chunk in chunks(opensearch, "2411.00001")] == ["https://arxiv.org/pdf/2411.00001v2"] * 2
+
+
+def test_with_section_based_chunking_off_a_papers_content_is_chunked_into_plain_word_windows(
+    database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CHUNKING__SECTION_BASED", "false")
+    sections = [{"title": "Method", "content": words(300, about="method")}]
+    hold(database, paper("2411.00001", raw_text=words(700, about="content"), sections=sections, pdf_processed=True))
+
+    rebuild(database)
+
+    # Windows of 600 words that overlap by 100: the Content's first 600 words, then its last 200, with no section.
+    windows = [(chunk["section_title"], chunk["chunk_word_count"]) for chunk in chunks(opensearch, "2411.00001")]
+    assert windows == [(None, 600), (None, 200)]
+
+
+def test_after_a_rebuild_the_index_holds_every_paper_postgresql_holds_and_the_rebuild_counts_their_papers_and_chunks(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    two_sections = content(("Method", words(300, about="method")), ("Results", words(300, about="results")))
+    hold(database, paper("2411.00001", version=2, **two_sections), paper("2411.00002"), paper("2411.00003"))
 
     counts = rebuild(database)
 
-    assert counts == {"papers_held": 3, "papers_indexed": 3}
-    assert entry_ids(opensearch) == ["2411.00001", "2411.00002", "2411.00003"]
+    # A Chunk for each of the first Paper's two sections, and one for each Paper without Content, its title and abstract.
+    assert counts == {"papers_held": 3, "papers_indexed": 3, "chunks_indexed": 4}
+    assert indexed_papers(opensearch) == ["2411.00001", "2411.00002", "2411.00003"]
 
 
-def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_one_with_the_courses_mapping(
+def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_one_with_the_courses_mapping_and_faiss(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    # The Index as a different mapping created it, where the title was a keyword rather than text.
-    opensearch.indices.create(index=index_name(), body={"mappings": {"properties": {"title": {"type": "keyword"}}}})
+    # The chunk index as a different mapping created it, where the title was a keyword rather than text.
+    opensearch.indices.create(index=chunk_index(), body={"mappings": {"properties": {"title": {"type": "keyword"}}}})
     hold(database, paper("2411.00001"))
 
     rebuild(database)
 
-    mapping = opensearch.indices.get_mapping(index=index_name())[index_name()]["mappings"]
-    assert mapping == ARXIV_PAPERS_MAPPING["mappings"]
+    mapping = opensearch.indices.get_mapping(index=chunk_index())[chunk_index()]["mappings"]
+    assert mapping == arxiv_papers_chunks_mapping(vector_dimension=1024, vector_space_type="cosinesimil")["mappings"]
+    # The course's HNSW parameters and cosine similarity, with faiss instead of nmslib.
+    assert mapping["properties"]["embedding"]["method"] == {
+        "name": "hnsw",
+        "engine": "faiss",
+        "space_type": "cosinesimil",
+        "parameters": {"m": 16, "ef_construction": 512},
+    }
 
 
-def test_a_rebuild_that_cannot_recreate_the_index_fails_without_indexing_a_paper(
-    database: BaseDatabase, opensearch: OpenSearch
-) -> None:
-    # The Index as an alias of another index, which OpenSearch refuses to delete through the alias.
-    opensearch.indices.create(index="arxiv-papers-v1", body={"aliases": {index_name(): {}}})
-    hold(database, paper("2411.00001"))
-
-    with pytest.raises(OpenSearchException, match=index_name()):
-        rebuild(database)
-
-    assert opensearch.count(index="arxiv-papers-v1")["count"] == 0
-
-
-def test_a_paper_without_content_is_indexed_and_found_by_its_title(database: BaseDatabase, opensearch: OpenSearch) -> None:
-    hold(database, paper("2411.00001", title="Lexical Search over the Papers whose PDF failed to parse", raw_text=None))
-
-    rebuild(database)
-
-    assert found_by_title(opensearch, "lexical") == ["2411.00001"]
-
-
-def test_content_longer_than_the_maximum_content_size_is_capped(
+def test_a_rebuild_creates_the_chunk_index_with_vectors_of_the_dimension_and_space_type_the_settings_give(
     database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("OPENSEARCH__MAX_TEXT_SIZE", "14")
-    hold(database, paper("2411.00001", raw_text="The Content of a long Paper.", pdf_processed=True))
+    monkeypatch.setenv("OPENSEARCH__VECTOR_DIMENSION", "8")
+    monkeypatch.setenv("OPENSEARCH__VECTOR_SPACE_TYPE", "l2")
 
     rebuild(database)
 
-    assert opensearch.get(index=index_name(), id="2411.00001")["_source"]["raw_text"] == "The Content of"
+    embedding = opensearch.indices.get_mapping(index=chunk_index())[chunk_index()]["mappings"]["properties"]["embedding"]
+    assert (embedding["dimension"], embedding["method"]["space_type"]) == (8, "l2")
+
+
+def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_indexing_a_paper(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    # The chunk index as an alias of another index, which OpenSearch refuses to delete through the alias.
+    opensearch.indices.create(index="arxiv-papers-chunks-v1", body={"aliases": {chunk_index(): {}}})
+    hold(database, paper("2411.00001"))
+
+    with pytest.raises(OpenSearchException, match=chunk_index()):
+        rebuild(database)
+
+    assert opensearch.count(index="arxiv-papers-chunks-v1")["count"] == 0
+
+
+def test_a_paper_held_without_content_and_one_with_empty_content_are_each_indexed_as_one_chunk_their_title_and_abstract(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    hold(database, paper("2411.00001", raw_text=None), paper("2411.00002", raw_text="", sections=[], pdf_processed=True))
+
+    rebuild(database)
+
+    arxiv_ids = ["2411.00001", "2411.00002"]
+    texts = {arxiv_id: [chunk["chunk_text"] for chunk in chunks(opensearch, arxiv_id)] for arxiv_id in arxiv_ids}
+    assert texts == {
+        "2411.00001": ["The title of 2411.00001\n\nAbstract: The abstract of 2411.00001."],
+        "2411.00002": ["The title of 2411.00002\n\nAbstract: The abstract of 2411.00002."],
+    }
 
 
 def test_indexing_given_arxiv_ids_indexes_exactly_those_papers_and_no_other_paper_the_curator_holds(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    create_index(opensearch)
+    create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002"), paper("2411.00003"))
 
     counts = index(database, ["2411.00001", "2411.00003"])
 
-    assert counts == {"papers_to_index": 2, "papers_indexed": 2}
-    assert entry_ids(opensearch) == ["2411.00001", "2411.00003"]
+    assert counts == {"papers_to_index": 2, "papers_indexed": 2, "chunks_indexed": 2}
+    assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_title_and_abstract_still_as_one_entry(
+def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_with_no_chunk_of_its_old_version_left(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    create_index(opensearch)
-    # Ingested and indexed long before, so its row was created then.
-    hold(database, paper("2411.00001", version=1, title="A first title", abstract="A first abstract."))
+    create_chunk_index(opensearch)
+    # Ingested and indexed long before, so its row was created then, with a Chunk for each of its three sections.
+    first_version = content(
+        ("Earlier Method", words(300, about="method")),
+        ("Earlier Results", words(300, about="results")),
+        ("Earlier Discussion", words(300, about="discussion")),
+    )
+    hold(database, paper("2411.00001", version=1, **first_version))
     created_long_before(database, "2411.00001")
     index(database, ["2411.00001"])
-    # Today's Ingestion stores its new Version, which updates the Paper's row.
-    hold(database, paper("2411.00001", version=2, title="A revised title", abstract="A revised abstract."))
+    # Today's Ingestion stores its new Version, with one section, which updates the Paper's row.
+    hold(database, paper("2411.00001", version=2, **content(("Revised Method", words(300, about="revision")))))
 
     index(database, ["2411.00001"])
 
-    assert entry_ids(opensearch) == ["2411.00001"]
-    entry = opensearch.get(index=index_name(), id="2411.00001")["_source"]
-    assert (entry["title"], entry["abstract"]) == ("A revised title", "A revised abstract.")
+    assert [chunk["section_title"] for chunk in chunks(opensearch, "2411.00001")] == ["Revised Method"]
 
 
-def test_when_opensearch_rejects_a_paper_indexing_given_arxiv_ids_indexes_the_others_then_fails_naming_it(
+def test_when_opensearch_rejects_a_chunk_indexing_given_arxiv_ids_indexes_the_other_papers_then_fails_naming_its_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    create_index(opensearch)
+    create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
 
     with pytest.raises(PapersNotIndexed, match=re.escape("2411.00002")):
         index(database, ["2411.00001", "2411.00002", "2411.00003"])
 
-    assert entry_ids(opensearch) == ["2411.00001", "2411.00003"]
+    assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_when_opensearch_rejects_a_paper_the_failure_counts_the_papers_indexed(
+def test_when_opensearch_rejects_a_chunk_the_failure_counts_the_papers_indexed(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
-    create_index(opensearch)
+    create_chunk_index(opensearch)
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
 
     with pytest.raises(PapersNotIndexed) as failure:
@@ -203,7 +287,21 @@ def test_when_opensearch_rejects_a_paper_the_failure_counts_the_papers_indexed(
     assert failure.value.papers_indexed == 2
 
 
-def test_when_opensearch_rejects_a_paper_a_rebuild_indexes_the_others_then_fails_naming_it(
+def test_when_opensearch_rejects_one_of_a_papers_chunks_the_failure_counts_those_it_indexed(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_chunk_index(opensearch)
+    two_sections = content(
+        ("Method", words(300, about="method")), (SECTION_TITLE_TOO_LONG_FOR_A_KEYWORD, words(300, about="results"))
+    )
+    hold(database, paper("2411.00001"), paper("2411.00002", **two_sections))
+
+    # The first Paper's one Chunk, and the second Paper's Chunk OpenSearch accepted, which the Index now holds.
+    with pytest.raises(PapersNotIndexed, match=re.escape("as 2 Chunks, but could not index 2411.00002")):
+        index(database, ["2411.00001", "2411.00002"])
+
+
+def test_when_opensearch_rejects_a_chunk_a_rebuild_indexes_the_other_papers_then_fails_naming_its_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     hold(database, paper("2411.00001"), paper("2411.00002", categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD]), paper("2411.00003"))
@@ -211,18 +309,18 @@ def test_when_opensearch_rejects_a_paper_a_rebuild_indexes_the_others_then_fails
     with pytest.raises(PapersNotIndexed, match=re.escape("2411.00002")):
         rebuild(database)
 
-    assert entry_ids(opensearch) == ["2411.00001", "2411.00003"]
+    assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-def test_with_the_index_missing_indexing_given_arxiv_ids_fails_without_indexing_a_paper_or_creating_the_index(
+def test_with_the_chunk_index_missing_indexing_given_arxiv_ids_fails_without_indexing_a_paper_or_creating_the_index(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     hold(database, paper("2411.00001"))
 
-    with pytest.raises(PapersNotIndexed, match=index_name()):
+    with pytest.raises(PapersNotIndexed, match=chunk_index()):
         index(database, ["2411.00001"])
 
-    assert not opensearch.indices.exists(index=index_name())
+    assert not opensearch.indices.exists(index=chunk_index())
 
 
 def test_with_opensearch_not_answering_indexing_given_arxiv_ids_fails(database: BaseDatabase, opensearch_down: None) -> None:

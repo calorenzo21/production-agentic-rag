@@ -22,15 +22,19 @@ _Avoid_: Topic, subject, tag
 
 **Ingestion**:
 The collection of Papers of a Category from arXiv into the curator.
-_Avoid_: Import, sync, crawl, fetch
+_Avoid_: Import, sync, crawl, fetch, ingestion pipeline
 
 **Search**:
-Finding the Papers the curator holds that match a researcher's words.
+Finding the Papers the curator holds whose Chunks match a researcher's words or their meaning.
 _Avoid_: Lookup
 
 **Index**:
-A searchable copy of the Papers the curator holds.
+A searchable copy of the Papers the curator holds, made of their Chunks.
 _Avoid_: Search engine, document store
+
+**Chunk**:
+A part of a Paper's Content that a Search can match on its own, held in the Index together with the Paper's title and abstract. A Paper without Content has one Chunk: its title and abstract.
+_Avoid_: Passage, segment, fragment
 
 **Week**:
 A stage of the reference course, identified by its tag.

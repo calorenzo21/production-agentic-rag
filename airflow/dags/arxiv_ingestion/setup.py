@@ -23,11 +23,11 @@ def setup_environment():
         # Test OpenSearch connection and create index if needed
         if opensearch_client.health_check():
             logger.info("OpenSearch connection verified")
-            # Ensure index exists
-            if opensearch_client.create_index(force=False):
-                logger.info("OpenSearch index created")
+            setup_results = opensearch_client.setup_indices(force=False)
+            if setup_results.get("hybrid_index"):
+                logger.info("Hybrid search index created with vector support")
             else:
-                logger.info("OpenSearch index already exists")
+                logger.info("Hybrid search index already exists")
         else:
             logger.warning("OpenSearch not healthy, indexing will fail")
 

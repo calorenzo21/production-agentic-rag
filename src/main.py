@@ -41,11 +41,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if opensearch_client.health_check():
         logger.info("OpenSearch connected successfully")
 
-        # Ensure index exists
-        if opensearch_client.create_index(force=False):
-            logger.info("OpenSearch index created")
+        # Setup hybrid index (supports all search types)
+        setup_results = opensearch_client.setup_indices(force=False)
+        if setup_results.get("hybrid_index"):
+            logger.info("Hybrid index created")
         else:
-            logger.info("OpenSearch index already exists")
+            logger.info("Hybrid index already exists")
 
         # Get index statistics
         stats = opensearch_client.get_index_stats()

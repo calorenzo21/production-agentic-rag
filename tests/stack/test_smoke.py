@@ -70,13 +70,15 @@ def test_the_api_reaches_the_database_opensearch_and_native_ollama() -> None:
     assert body["services"]["ollama"]["status"] == "healthy"
 
 
-def test_the_api_reports_the_size_of_the_index() -> None:
-    index_name = settings_in("api", "OPENSEARCH__")["OPENSEARCH__INDEX_NAME"]
-    held = httpx.get(f"{OPENSEARCH_URL}/{index_name}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
+def test_the_api_reports_the_chunk_index_and_its_chunks() -> None:
+    opensearch = settings_in("api", "OPENSEARCH__")
+    chunk_index = f"{opensearch['OPENSEARCH__INDEX_NAME']}-{opensearch['OPENSEARCH__CHUNK_INDEX_SUFFIX']}"
+    held = httpx.get(f"{OPENSEARCH_URL}/{chunk_index}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
 
     response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
 
-    assert response.json()["services"]["opensearch"]["message"] == f"Index '{index_name}' with {held} documents"
+    # Each of the chunk index's documents is a Chunk, as the course reports them.
+    assert response.json()["services"]["opensearch"]["message"] == f"Index '{chunk_index}' with {held} documents"
 
 
 def test_the_api_lists_the_papers_rag_db_holds() -> None:
@@ -217,6 +219,29 @@ def test_the_api_and_airflow_alone_receive_the_opensearch_settings() -> None:
     for name, service in services().items():
         received = {variable for variable in environment(service["ID"]) if variable.startswith("OPENSEARCH__")}
         assert received == (expected if name in {"api", "airflow"} else set()), name
+
+
+# The indexing's settings that hold no secret: the chunker's, and the chunk index's and its vectors'.
+INDEXING_SETTINGS = (
+    "CHUNKING__",
+    "OPENSEARCH__CHUNK_INDEX_SUFFIX",
+    "OPENSEARCH__VECTOR_DIMENSION",
+    "OPENSEARCH__VECTOR_SPACE_TYPE",
+)
+
+
+def test_the_api_and_airflow_alone_receive_the_indexing_settings_from_env() -> None:
+    # A setting missing or empty in .env takes compose.yml's default, which is the value .env.example gives it.
+    example = dotenv_values(REPOSITORY / ".env.example")
+    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith(INDEXING_SETTINGS)}
+
+    assert len(expected) == 7
+    for name, service in services().items():
+        received = {
+            variable: value for variable, value in environment(service["ID"]).items() if variable.startswith(INDEXING_SETTINGS)
+        }
+        # Both run the indexing: Airflow each day, and the API's container for make reindex.
+        assert received == (expected if name in {"api", "airflow"} else {}), name
 
 
 def test_the_api_and_airflow_alone_receive_the_jina_key_from_env() -> None:
