@@ -16,6 +16,8 @@ x-app-environment: &app-environment
   OPENSEARCH__USERNAME: rag_app
   OPENSEARCH__PASSWORD: ${OPENSEARCH_APP_PASSWORD:?run make setup}
   OPENSEARCH__CA_CERTS: /certs/opensearch-ca.crt
+  # make setup cannot generate it: the maintainer pastes it into .env. Without it, the API still starts.
+  JINA_API_KEY: ${JINA_API_KEY:-}
   # Ollama runs natively on the host so that it can use the GPU.
   OLLAMA_HOST: http://host.docker.internal:11434
   OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}

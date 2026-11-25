@@ -219,6 +219,19 @@ def test_the_api_and_airflow_alone_receive_the_opensearch_settings() -> None:
         assert received == (expected if name in {"api", "airflow"} else set()), name
 
 
+def test_the_api_and_airflow_alone_receive_the_jina_key_from_env() -> None:
+    key = ENV.get("JINA_API_KEY")
+    paste_your_key = "make setup cannot generate the Jina AI key: paste yours into .env"
+    assert key, paste_your_key
+    assert key != dotenv_values(REPOSITORY / ".env.example")["JINA_API_KEY"], paste_your_key
+    environments = {name: environment(service["ID"]) for name, service in services().items()}
+
+    # Service names only, as the key is a secret, which a failed assertion on it would print.
+    receiving_a_key = {name for name, variables in environments.items() if "JINA_API_KEY" in variables}
+    receiving_the_key = {name for name, variables in environments.items() if variables.get("JINA_API_KEY") == key}
+    assert receiving_a_key == receiving_the_key == {"api", "airflow"}
+
+
 def test_no_container_receives_the_former_flat_opensearch_settings() -> None:
     former = {"OPENSEARCH_HOST", "OPENSEARCH_USERNAME", "OPENSEARCH_PASSWORD", "OPENSEARCH_CA_CERTS"}
 

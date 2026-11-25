@@ -16,6 +16,8 @@ from src.services.opensearch.factory import make_opensearch_client
 from testcontainers.opensearch import OpenSearchContainer
 from testcontainers.postgres import PostgresContainer
 
+from tests.fake_jina import FakeJina
+
 REPOSITORY = Path(__file__).parents[1]
 
 
@@ -70,3 +72,9 @@ def opensearch(disposable_opensearch: OpenSearch) -> Iterator[OpenSearch]:
     yield disposable_opensearch
     # Except those whose names start with a dot, where OpenSearch's plugins keep their configuration.
     disposable_opensearch.indices.delete(index="*,-.*")
+
+
+@pytest.fixture
+def jina() -> FakeJina:
+    """Jina AI, faked at its HTTP edge, which a Jina client reaches through the fake's transport."""
+    return FakeJina()

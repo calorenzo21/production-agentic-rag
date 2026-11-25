@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from src.config import get_settings
 from src.db.factory import make_database
 from src.routers import papers, ping, search
+from src.services.embeddings.factory import make_embeddings_service
 from src.services.opensearch.factory import make_opensearch_client
 
 # Setup logging
@@ -53,12 +54,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("OpenSearch connection failed - search features will be limited")
 
     # Unlike the course, the API builds neither the arXiv client nor the PDF parser: no endpoint downloads or parses
-    # PDFs, and the API image has no Docling.
+    # PDFs, and the API image has no Docling. Of the course's other services, it builds only the Jina client.
+    embeddings_service = make_embeddings_service()
+    app.state.embeddings_service = embeddings_service
 
     logger.info("API ready")
     yield
 
-    # Cleanup
+    # Cleanup. The course never closes the Jina client (README.md).
+    await embeddings_service.close()
     database.teardown()
     logger.info("API shutdown complete")
 

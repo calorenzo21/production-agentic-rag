@@ -92,6 +92,9 @@ class Settings(DefaultSettings):
     ollama_model: str = "llama3.2:1b"
     ollama_timeout: int = 300  # 5 minutes for LLM operations
 
+    # Jina AI embeddings configuration. make setup cannot generate the key: the maintainer pastes it into .env.
+    jina_api_key: str = ""
+
     # arXiv settings
     arxiv: ArxivSettings = Field(default_factory=ArxivSettings)
 
