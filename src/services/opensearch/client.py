@@ -2,11 +2,11 @@ import logging
 from typing import Any
 
 from opensearchpy import OpenSearch, helpers
-from opensearchpy.exceptions import RequestError, TransportError
+from opensearchpy.exceptions import NotFoundError, RequestError, TransportError
 from src.config import Settings, get_settings
 from src.exceptions import OpenSearchException
 
-from .index_config_hybrid import arxiv_papers_chunks_mapping
+from .index_config_hybrid import HYBRID_RRF_PIPELINE, arxiv_papers_chunks_mapping
 from .query_builder import QueryBuilder
 
 logger = logging.getLogger(__name__)
@@ -44,9 +44,10 @@ class OpenSearchClient:
         logger.info(f"OpenSearch client initialized with host: {host}")
 
     def setup_indices(self, force: bool = False) -> dict[str, bool]:
-        """Setup the hybrid search index."""
+        """Setup the hybrid search index and RRF pipeline."""
         results = {}
         results["hybrid_index"] = self._create_hybrid_index(force)
+        results["rrf_pipeline"] = self._create_rrf_pipeline(force)
         return results
 
     def _create_hybrid_index(self, force: bool = False) -> bool:
@@ -95,6 +96,45 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Unexpected error creating hybrid index: {e}")
             return False
+
+    def _create_rrf_pipeline(self, force: bool = False) -> bool:
+        """Create RRF search pipeline for native hybrid search, named by OPENSEARCH__RRF_PIPELINE_NAME.
+
+        Unlike the course's, it looks the pipeline up, and deletes it on force, through the search pipeline API rather than
+        the ingest pipeline API, where it is never found, so the course's always creates it again (README.md). On force it
+        deletes it as the course means to, although creating it again would replace it, so a failure to create it then
+        leaves no pipeline. And like the creation of the Index, it reports a failure by returning False rather than raising
+        it (README.md).
+
+        :param force: If True, recreate pipeline even if it exists
+        :returns: True if created, False if it already exists or could not be created
+        """
+        pipeline_id = self.settings.opensearch.rrf_pipeline_name
+        try:
+            if self._search_pipeline_exists(pipeline_id):
+                if not force:
+                    logger.info(f"RRF pipeline already exists: {pipeline_id}")
+                    return False
+                self.client.search_pipeline.delete(id=pipeline_id)
+                logger.info(f"Deleted existing RRF pipeline: {pipeline_id}")
+
+            # Creating it again, as the API's 4 workers may at startup, replaces it without an error.
+            self.client.search_pipeline.put(id=pipeline_id, body=HYBRID_RRF_PIPELINE)
+
+            logger.info(f"Created RRF search pipeline: {pipeline_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error creating RRF pipeline: {e}")
+            return False
+
+    def _search_pipeline_exists(self, pipeline_id: str) -> bool:
+        """Whether OpenSearch holds the search pipeline with this ID."""
+        try:
+            self.client.search_pipeline.get(id=pipeline_id)
+        except NotFoundError:
+            return False
+        return True
 
     def _wait_for_existing_index(self) -> None:
         """Wait until the existing Index can be used, as creating it does, since another worker may have just created it."""
@@ -174,25 +214,38 @@ class OpenSearchClient:
     def search_unified(
         self,
         query: str,
+        query_embedding: list[float] | None = None,
         size: int = 10,
         from_: int = 0,
         categories: list[str] | None = None,
         latest: bool = False,
+        use_hybrid: bool = True,
+        min_score: float = 0.0,
     ) -> dict[str, Any]:
-        """Search the Chunks the Index holds by their words, with BM25.
+        """Unified search method supporting BM25 and hybrid modes.
 
-        Unlike the course's, it raises OpenSearchException when OpenSearch fails the Search, as when it does not answer
-        or the Index does not exist, rather than answering as if no Chunk matched (README.md).
+        Unlike the course's, it raises OpenSearchException when OpenSearch fails the Search, as when it does not answer,
+        the Index does not exist or the RRF pipeline is missing, rather than answering as if no Chunk matched (README.md).
 
         :param query: Text query for search
+        :param query_embedding: Optional embedding for hybrid search
         :param size: Number of results to return
         :param from_: Offset for pagination
         :param categories: Optional category filter
         :param latest: Sort by date instead of relevance
+        :param use_hybrid: If True and embedding provided, use hybrid search
+        :param min_score: Minimum score threshold
         :returns: Search results
         """
         try:
-            return self._search_bm25_only(query=query, size=size, from_=from_, categories=categories, latest=latest)
+            # If no embedding provided or hybrid disabled, use BM25 only
+            if not query_embedding or not use_hybrid:
+                return self._search_bm25_only(query=query, size=size, from_=from_, categories=categories, latest=latest)
+
+            # Use native OpenSearch hybrid search with RRF pipeline
+            return self._search_hybrid_native(
+                query=query, query_embedding=query_embedding, size=size, categories=categories, min_score=min_score
+            )
         except TransportError as e:
             raise OpenSearchException(f"OpenSearch failed the Search: {e}") from e
 
@@ -216,6 +269,59 @@ class OpenSearchClient:
             results["hits"].append(chunk)
 
         logger.info(f"BM25 search for '{query[:50]}...' returned {results['total']} results")
+        return results
+
+    def _search_hybrid_native(
+        self, query: str, query_embedding: list[float], size: int, categories: list[str] | None, min_score: float
+    ) -> dict[str, Any]:
+        """Native OpenSearch hybrid search with RRF pipeline.
+
+        Unlike the course's, it filters both halves by Category, as OpenSearch 2.19's hybrid query has no filter they
+        share: the k-NN half inside its search, which faiss allows. The course's filters only the BM25 half, so its k-NN
+        half returns Chunks of any Category (README.md).
+        """
+        builder = QueryBuilder(query=query, size=size * 2, from_=0, categories=categories, latest_papers=False)
+        bm25_search_body = builder.build()
+
+        bm25_query = bm25_search_body["query"]
+
+        knn_query: dict[str, Any] = {"vector": query_embedding, "k": size * 2}
+        # The BM25 half's own filter, so that both halves filter alike.
+        bm25_filter = bm25_query["bool"].get("filter")
+        if bm25_filter:
+            knn_query["filter"] = {"bool": {"filter": bm25_filter}}
+
+        hybrid_query = {"hybrid": {"queries": [bm25_query, {"knn": {"embedding": knn_query}}]}}
+
+        search_body = {
+            "size": size,
+            "query": hybrid_query,
+            "_source": bm25_search_body["_source"],
+            "highlight": bm25_search_body["highlight"],
+        }
+
+        # Execute search with RRF pipeline
+        response = self.client.search(
+            index=self.index_name, body=search_body, params={"search_pipeline": self.settings.opensearch.rrf_pipeline_name}
+        )
+
+        results: dict[str, Any] = {"total": response["hits"]["total"]["value"], "hits": []}
+
+        for hit in response["hits"]["hits"]:
+            if hit["_score"] < min_score:
+                continue
+
+            chunk = hit["_source"]
+            chunk["score"] = hit["_score"]
+            chunk["chunk_id"] = hit["_id"]
+
+            if "highlight" in hit:
+                chunk["highlights"] = hit["highlight"]
+
+            results["hits"].append(chunk)
+
+        results["total"] = len(results["hits"])
+        logger.info(f"Native hybrid search for '{query[:50]}...' returned {results['total']} results")
         return results
 
     def get_index_stats(self) -> dict[str, Any]:

@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import APIRouter, HTTPException
-from src.dependencies import OpenSearchDep
+from src.dependencies import EmbeddingsDep, OpenSearchDep
 from src.exceptions import OpenSearchException
 from src.schemas.api.search import HybridSearchRequest, SearchHit, SearchResponse
 
@@ -11,7 +11,9 @@ router = APIRouter(prefix="/hybrid-search", tags=["hybrid-search"])
 
 
 @router.post("/", response_model=SearchResponse)
-async def hybrid_search(request: HybridSearchRequest, opensearch_client: OpenSearchDep) -> SearchResponse:
+async def hybrid_search(
+    request: HybridSearchRequest, opensearch_client: OpenSearchDep, embeddings_service: EmbeddingsDep
+) -> SearchResponse:
     """
     Hybrid search endpoint supporting multiple search modes.
     """
@@ -19,14 +21,28 @@ async def hybrid_search(request: HybridSearchRequest, opensearch_client: OpenSea
     # and answers 503, where the course's answers 200 with no hits. Neither the 503 nor a 500 holds the exception's
     # text, which the course's 500 does (README.md).
     try:
-        logger.info(f"Hybrid search: '{request.query}' (hybrid: False)")
+        query_embedding = None
+        if request.use_hybrid:
+            # One attempt, so that the Search falls back to words alone at Jina's first failure, a rate limit included,
+            # rather than waiting through the retries of the indexing's embeddings (README.md).
+            try:
+                query_embedding = await embeddings_service.embed_query(request.query)
+                logger.info("Generated query embedding for hybrid search")
+            except Exception as e:
+                logger.warning(f"Failed to generate embeddings, falling back to BM25: {e}")
+                query_embedding = None
+
+        logger.info(f"Hybrid search: '{request.query}' (hybrid: {request.use_hybrid and query_embedding is not None})")
 
         results = opensearch_client.search_unified(
             query=request.query,
+            query_embedding=query_embedding,
             size=request.size,
             from_=request.from_,
             categories=request.categories,
             latest=request.latest_papers,
+            use_hybrid=request.use_hybrid,
+            min_score=request.min_score,
         )
 
         hits = []
@@ -54,7 +70,7 @@ async def hybrid_search(request: HybridSearchRequest, opensearch_client: OpenSea
             hits=hits,
             size=request.size,
             **{"from": request.from_},
-            search_mode="bm25",
+            search_mode="hybrid" if (request.use_hybrid and query_embedding) else "bm25",
         )
 
         logger.info(f"Search completed: {search_response.total} results returned")

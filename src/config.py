@@ -84,6 +84,9 @@ class OpenSearchSettings(DefaultSettings):
     vector_dimension: int = 1024  # Jina embeddings dimension
     vector_space_type: str = "cosinesimil"  # cosinesimil, l2, innerproduct
 
+    # Hybrid search settings. The course never reads the pipeline's name, which its code hard-codes too (README.md).
+    rrf_pipeline_name: str = "hybrid-rrf-pipeline"
+
     # The course's OpenSearch needs neither TLS nor a login. This one requires both, as the rag_app user.
     username: str = "rag_app"
     password: str = ""

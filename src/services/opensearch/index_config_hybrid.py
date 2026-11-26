@@ -76,3 +76,22 @@ def arxiv_papers_chunks_mapping(vector_dimension: int, vector_space_type: str) -
             },
         },
     }
+
+
+# The search pipeline that fuses a hybrid query's halves, without its ID, which OPENSEARCH__RRF_PIPELINE_NAME gives. The
+# course's also holds its ID, so its setting is never read (README.md).
+HYBRID_RRF_PIPELINE: dict[str, Any] = {
+    "description": "Post processor for hybrid RRF search",
+    "phase_results_processors": [
+        {
+            "score-ranker-processor": {
+                "combination": {
+                    "technique": "rrf",  # Reciprocal Rank Fusion
+                    # Default k=60 for RRF formula: 1/(k+rank). OpenSearch 2.19 reads it from the combination's parameters,
+                    # so it ignores this one, and applies its default, the same 60.
+                    "rank_constant": 60,
+                }
+            }
+        }
+    ],
+}

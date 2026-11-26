@@ -27,6 +27,9 @@ from tests.unit.services.virtual_time import VirtualTimePolicy
 CATEGORY_TOO_LONG_FOR_A_KEYWORD = "cs." + "A" * 32766
 # A section title OpenSearch rejects for the same reason, as each Chunk's section is a keyword too.
 SECTION_TITLE_TOO_LONG_FOR_A_KEYWORD = "Results " + "A" * 32766
+# A search pipeline's name OpenSearch refuses, as it refuses a request whose first line, which holds the name, is over
+# 4096 bytes long.
+PIPELINE_NAME_TOO_LONG_FOR_A_REQUEST_LINE = "hybrid-rrf-pipeline-" + "x" * 5000
 # A meaning a test makes Jina embed a text as: a unit vector of jina-embeddings-v3's 1024 dimensions, as Jina's are.
 A_MEANING = own_vector("a meaning", 1024)
 
@@ -191,6 +194,19 @@ async def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_inde
         await rebuild(database)
 
     assert opensearch.count(index="arxiv-papers-chunks-v1")["count"] == 0
+
+
+async def test_a_rebuild_that_cannot_recreate_the_rrf_pipeline_fails_without_indexing_a_paper(
+    database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every Search by meaning goes through the pipeline, so without it each answers 503.
+    monkeypatch.setenv("OPENSEARCH__RRF_PIPELINE_NAME", PIPELINE_NAME_TOO_LONG_FOR_A_REQUEST_LINE)
+    hold(database, paper("2411.00001"))
+
+    with pytest.raises(PapersNotIndexed, match="RRF pipeline"):
+        await rebuild(database)
+
+    assert opensearch.count(index=chunk_index())["count"] == 0
 
 
 async def test_a_paper_held_without_content_and_one_with_empty_content_are_each_indexed_as_one_chunk_their_title_and_abstract(

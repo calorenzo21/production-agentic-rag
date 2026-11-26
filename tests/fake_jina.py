@@ -32,6 +32,13 @@ def own_vector(text: str, dimensions: int) -> list[float]:
     return [component / length for component in components]
 
 
+def halfway(first: Sequence[float], second: Sequence[float]) -> list[float]:
+    """The unit vector halfway between two unit vectors: a meaning near each, though less near than each is to itself."""
+    total = [a + b for a, b in zip(first, second, strict=True)]
+    length = math.hypot(*total)
+    return [component / length for component in total]
+
+
 class _Transport(httpx.MockTransport):
     """The network between a Jina client and the fake Jina. It tells when the client closes it."""
 

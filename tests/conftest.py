@@ -72,10 +72,12 @@ def disposable_opensearch() -> Iterator[OpenSearch]:
 
 @pytest.fixture
 def opensearch(disposable_opensearch: OpenSearch) -> Iterator[OpenSearch]:
-    """The disposable OpenSearch, with no indices left after each test."""
+    """The disposable OpenSearch, with no indices or search pipelines left after each test."""
     yield disposable_opensearch
     # Except those whose names start with a dot, where OpenSearch's plugins keep their configuration.
     disposable_opensearch.indices.delete(index="*,-.*")
+    # The cluster holds them apart from any index, so they outlive the indices, such as the RRF pipeline.
+    disposable_opensearch.search_pipeline.delete(id="*")
 
 
 @pytest.fixture

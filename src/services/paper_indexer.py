@@ -58,22 +58,32 @@ class PaperIndexer:
 
     async def rebuild_index(self) -> dict[str, int]:
         """
-        Delete the Week 3 index, and recreate the Index with the course's mapping, then index every Paper the curator
-        holds, and count the Papers held, and the Papers and Chunks indexed. Until it ends, Searches find fewer Papers, as
-        the Index starts empty.
+        Delete the Week 3 index, and recreate the Index with the course's mapping, and its RRF pipeline, then index every
+        Paper the curator holds, and count the Papers held, and the Papers and Chunks indexed. Until it ends, Searches find
+        fewer Papers, as the Index starts empty.
 
         Raises PapersNotIndexed before indexing any Paper when OpenSearch does not delete the Week 3 index or recreate the
-        Index, as when it does not answer. Otherwise it indexes every Paper it can, then raises it naming the others.
+        Index or its RRF pipeline, as when it does not answer. Otherwise it indexes every Paper it can, then raises it
+        naming the others.
         """
         try:
             # First, so that a failure leaves the Index as it was.
             self.opensearch_client.delete_week3_index()
         except OpenSearchException as e:
             raise PapersNotIndexed(f"Could not delete the Week 3 index, so indexed no Paper: {e}", papers_indexed=0) from e
-        if not self.opensearch_client.setup_indices(force=True)["hybrid_index"]:
+        recreated = self.opensearch_client.setup_indices(force=True)
+        if not recreated["hybrid_index"]:
             # The client logs why. Whatever Index is left may have another mapping, or none, which indexing would create.
             raise PapersNotIndexed(
                 f"Could not recreate the Index {self.opensearch_client.index_name}, so indexed no Paper", papers_indexed=0
+            )
+        if not recreated["rrf_pipeline"]:
+            # The client logs why. The client deleted it first, as the course does, so a Search by meaning answers 503
+            # until a pipeline exists again, which the API's next startup and the DAG's next setup create.
+            raise PapersNotIndexed(
+                f"Could not recreate the RRF pipeline {self.opensearch_client.settings.opensearch.rrf_pipeline_name}, so "
+                "indexed no Paper",
+                papers_indexed=0,
             )
         held, chunks_indexed, not_indexed = await self._index(select(*PAPER_COLUMNS), replace_existing=False)
         indexed = held - len(not_indexed)
