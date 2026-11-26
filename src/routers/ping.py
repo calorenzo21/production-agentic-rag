@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
@@ -54,14 +55,22 @@ async def health_check(settings: SettingsDep, database: DatabaseDep, opensearch_
         if not opensearch_client.health_check():
             return ServiceStatus(status="unhealthy", message="Not responding")
         stats = opensearch_client.get_index_stats()
+        # Unlike the course's, it reports how many Papers the Index holds too, and calls its documents what they are,
+        # Chunks. When OpenSearch cannot count the Papers, as when the Index does not exist, OpenSearch is unhealthy
+        # (README.md).
+        paper_count = opensearch_client.count_papers()
         return ServiceStatus(
             status="healthy",
-            message=f"Index '{stats.get('index_name', 'unknown')}' with {stats.get('document_count', 0)} documents",
+            message=(
+                f"Index '{stats.get('index_name', 'unknown')}' with {paper_count} Papers and "
+                f"{stats.get('document_count', 0)} Chunks"
+            ),
         )
 
-    # Run synchronous checks
-    _check_service("database", _check_database)
-    _check_service("opensearch", _check_opensearch)
+    # Run synchronous checks. Unlike the course's, in a worker thread, so that while they wait for PostgreSQL or
+    # OpenSearch, the worker's other requests do not wait with them (README.md).
+    await asyncio.to_thread(_check_service, "database", _check_database)
+    await asyncio.to_thread(_check_service, "opensearch", _check_opensearch)
 
     # Handle Ollama async check separately
     try:

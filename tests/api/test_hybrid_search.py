@@ -10,14 +10,12 @@ from datetime import datetime
 import pytest
 from httpx import AsyncClient
 from opensearchpy import OpenSearch
-from src.config import Settings, get_settings
+from src.config import get_settings
 from src.db.interfaces.base import BaseDatabase
-from src.schemas.arxiv.paper import PaperCreate
 from src.services.opensearch.factory import make_opensearch_client
-from src.services.paper_indexer import make_paper_indexer
 
 from tests.fake_jina import Failure, FakeJina, halfway, own_vector
-from tests.papers import chunk_index, content, hold, paper, words
+from tests.papers import chunk_index, content, hold_and_index, paper, words
 
 SEARCH = "/api/v1/hybrid-search/"
 # What the API answers when OpenSearch fails a Search, whatever the failure, so that its text never reaches the caller.
@@ -37,12 +35,6 @@ IN_BOTH_MODES = pytest.mark.parametrize(
 )
 # A query that every Chunk of the Papers hold_papers_matching_the_query holds matches by its words.
 QUERY = "attention please"
-
-
-async def hold_and_index(database: BaseDatabase, *papers: PaperCreate) -> None:
-    """Store the Papers as the Ingestion does, then index them into the Index, which the API created at startup."""
-    hold(database, *papers)
-    await make_paper_indexer(database, Settings()).index_papers([held.arxiv_id for held in papers])
 
 
 async def hold_papers_matching_the_query(database: BaseDatabase, jina: FakeJina) -> None:

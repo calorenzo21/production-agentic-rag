@@ -1,6 +1,6 @@
 """
 Papers as the Ingestion stores them, and the chunk index their Chunks are indexed into, which the indexing tests and the
-Search's API tests share.
+API tests share.
 """
 
 from datetime import datetime
@@ -10,6 +10,7 @@ from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
 from src.repositories.paper import PaperRepository
 from src.schemas.arxiv.paper import PaperCreate
+from src.services.paper_indexer import make_paper_indexer
 
 
 def words(count: int, *, about: str) -> str:
@@ -47,6 +48,12 @@ def hold(database: BaseDatabase, *papers: PaperCreate) -> None:
         repository = PaperRepository(session)
         for held in papers:
             repository.upsert(held)
+
+
+async def hold_and_index(database: BaseDatabase, *papers: PaperCreate) -> None:
+    """Store the Papers as the Ingestion does, then index them into the Index, which the API created at startup."""
+    hold(database, *papers)
+    await make_paper_indexer(database, Settings()).index_papers([held.arxiv_id for held in papers])
 
 
 def chunk_index() -> str:

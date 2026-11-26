@@ -70,15 +70,24 @@ def test_the_api_reaches_the_database_opensearch_and_native_ollama() -> None:
     assert body["services"]["ollama"]["status"] == "healthy"
 
 
-def test_the_api_reports_the_chunk_index_and_its_chunks() -> None:
+def test_the_api_reports_the_papers_and_chunks_the_index_holds() -> None:
     opensearch = settings_in("api", "OPENSEARCH__")
     chunk_index = f"{opensearch['OPENSEARCH__INDEX_NAME']}-{opensearch['OPENSEARCH__CHUNK_INDEX_SUFFIX']}"
-    held = httpx.get(f"{OPENSEARCH_URL}/{chunk_index}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
+    # Exact below its precision threshold, 40,000 at most, which the Papers the stack holds stay far below. The health
+    # check counts them exactly however many there are.
+    distinct_arxiv_ids = {"papers": {"cardinality": {"field": "arxiv_id", "precision_threshold": 40_000}}}
+    with httpx.Client(base_url=OPENSEARCH_URL, auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY) as client:
+        chunk_count = client.get(f"/{chunk_index}/_count").json()["count"]
+        search = client.post(f"/{chunk_index}/_search", json={"size": 0, "aggs": distinct_arxiv_ids})
+    paper_count = search.json()["aggregations"]["papers"]["value"]
 
     response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
 
-    # Each of the chunk index's documents is a Chunk, as the course reports them.
-    assert response.json()["services"]["opensearch"]["message"] == f"Index '{chunk_index}' with {held} documents"
+    # Each of the chunk index's documents is a Chunk, and each distinct arXiv ID its Chunks hold a Paper.
+    assert response.json()["services"]["opensearch"] == {
+        "status": "healthy",
+        "message": f"Index '{chunk_index}' with {paper_count} Papers and {chunk_count} Chunks",
+    }
 
 
 def test_a_real_search_answers_by_words_and_meaning_with_papers_rag_db_holds() -> None:

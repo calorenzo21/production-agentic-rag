@@ -13,6 +13,9 @@ from .query_builder import PAPERS_MATCHING, QueryBuilder
 
 logger = logging.getLogger(__name__)
 
+# How many arXiv IDs each request to OpenSearch returns, when counting the Papers the Index holds for the health check.
+ARXIV_IDS_PER_REQUEST = 10_000
+
 
 class OpenSearchClient:
     """
@@ -419,6 +422,30 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Error getting index stats: {e}")
             return {"error": str(e)}
+
+    def count_papers(self) -> int:
+        """
+        The number of Papers the Index holds, which the health check reports, unlike the course's (README.md): the distinct
+        arXiv IDs of its Chunks, ARXIV_IDS_PER_REQUEST at a time, so that the count is exact however many there are. A
+        cardinality aggregation counts them only approximately above its precision threshold, 3,000 by default and 40,000
+        at most, so its count would drift as the Papers held grow.
+
+        Raises OpenSearchException when OpenSearch fails to count them, as when the Index does not exist, rather than
+        answering 0, as if the Index held no Paper.
+        """
+        count = 0
+        composite: dict[str, Any] = {"size": ARXIV_IDS_PER_REQUEST, "sources": [{"arxiv_id": {"terms": {"field": "arxiv_id"}}}]}
+        try:
+            while True:
+                body = {"size": 0, "aggs": {"arxiv_ids": {"composite": composite}}}
+                arxiv_ids = self.client.search(index=self.index_name, body=body)["aggregations"]["arxiv_ids"]
+                count += len(arxiv_ids["buckets"])
+                if len(arxiv_ids["buckets"]) < ARXIV_IDS_PER_REQUEST:
+                    return count
+                # The last arXiv ID returned, after which the next request starts.
+                composite["after"] = arxiv_ids["after_key"]
+        except TransportError as e:
+            raise OpenSearchException(str(e)) from e
 
     def health_check(self) -> bool:
         """Check if OpenSearch is healthy and accessible.
