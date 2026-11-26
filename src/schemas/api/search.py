@@ -1,11 +1,14 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+# The most results a page of a Search holds.
+LARGEST_PAGE = 100
+
 
 class HybridSearchRequest(BaseModel):
     """Request model for hybrid search supporting all search modes."""
 
     query: str = Field(..., description="Search query text", min_length=1, max_length=500)
-    size: int = Field(10, description="Number of results to return", ge=1, le=100)
+    size: int = Field(10, description="Number of results to return", ge=1, le=LARGEST_PAGE)
     from_: int = Field(0, description="Offset for pagination", ge=0, alias="from")
     categories: list[str] | None = Field(None, description="Filter by arXiv categories (e.g., ['cs.AI', 'cs.LG'])")
     latest_papers: bool = Field(False, description="Sort by publication date instead of relevance")

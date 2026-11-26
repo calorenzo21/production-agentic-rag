@@ -86,6 +86,9 @@ class OpenSearchSettings(DefaultSettings):
 
     # Hybrid search settings. The course never reads the pipeline's name, which its code hard-codes too (README.md).
     rrf_pipeline_name: str = "hybrid-rrf-pipeline"
+    # How many Chunks each half of a Search by words and meaning keeps, on every page: this many times the largest page.
+    # The course never reads it (README.md).
+    hybrid_search_size_multiplier: int = 2
 
     # The course's OpenSearch needs neither TLS nor a login. This one requires both, as the rag_app user.
     username: str = "rag_app"

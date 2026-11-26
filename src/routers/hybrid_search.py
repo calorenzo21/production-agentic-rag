@@ -43,6 +43,8 @@ async def hybrid_search(
             latest=request.latest_papers,
             use_hybrid=request.use_hybrid,
             min_score=request.min_score,
+            # Each Paper once, with its best Chunk, where the course's returns each Chunk that matches (README.md).
+            one_per_paper=True,
         )
 
         hits = []

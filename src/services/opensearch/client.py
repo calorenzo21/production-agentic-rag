@@ -1,13 +1,15 @@
 import logging
+from datetime import datetime
 from typing import Any
 
 from opensearchpy import OpenSearch, helpers
 from opensearchpy.exceptions import NotFoundError, RequestError, TransportError
 from src.config import Settings, get_settings
 from src.exceptions import OpenSearchException
+from src.schemas.api.search import LARGEST_PAGE
 
 from .index_config_hybrid import HYBRID_RRF_PIPELINE, arxiv_papers_chunks_mapping
-from .query_builder import QueryBuilder
+from .query_builder import PAPERS_MATCHING, QueryBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -221,11 +223,14 @@ class OpenSearchClient:
         latest: bool = False,
         use_hybrid: bool = True,
         min_score: float = 0.0,
+        one_per_paper: bool = False,
     ) -> dict[str, Any]:
         """Unified search method supporting BM25 and hybrid modes.
 
         Unlike the course's, it raises OpenSearchException when OpenSearch fails the Search, as when it does not answer,
         the Index does not exist or the RRF pipeline is missing, rather than answering as if no Chunk matched (README.md).
+        And on request, it returns only the best Chunk of each Paper, and counts the Papers, as the endpoint's Search does.
+        Without it, it returns every Chunk that matches, as the course's does for Week 5's /ask (README.md).
 
         :param query: Text query for search
         :param query_embedding: Optional embedding for hybrid search
@@ -235,28 +240,64 @@ class OpenSearchClient:
         :param latest: Sort by date instead of relevance
         :param use_hybrid: If True and embedding provided, use hybrid search
         :param min_score: Minimum score threshold
+        :param one_per_paper: Return only the best Chunk of each Paper, and count the Papers rather than the Chunks
         :returns: Search results
         """
         try:
             # If no embedding provided or hybrid disabled, use BM25 only
             if not query_embedding or not use_hybrid:
-                return self._search_bm25_only(query=query, size=size, from_=from_, categories=categories, latest=latest)
+                return self._search_bm25_only(
+                    query=query,
+                    size=size,
+                    from_=from_,
+                    categories=categories,
+                    latest=latest,
+                    min_score=min_score,
+                    one_per_paper=one_per_paper,
+                )
 
             # Use native OpenSearch hybrid search with RRF pipeline
             return self._search_hybrid_native(
-                query=query, query_embedding=query_embedding, size=size, categories=categories, min_score=min_score
+                query=query,
+                query_embedding=query_embedding,
+                size=size,
+                from_=from_,
+                categories=categories,
+                latest=latest,
+                min_score=min_score,
+                one_per_paper=one_per_paper,
             )
         except TransportError as e:
             raise OpenSearchException(f"OpenSearch failed the Search: {e}") from e
 
-    def _search_bm25_only(self, query: str, size: int, from_: int, categories: list[str] | None, latest: bool) -> dict[str, Any]:
-        """Pure BM25 search implementation."""
-        builder = QueryBuilder(query=query, size=size, from_=from_, categories=categories, latest_papers=latest)
+    def _search_bm25_only(
+        self,
+        query: str,
+        size: int,
+        from_: int,
+        categories: list[str] | None,
+        latest: bool,
+        min_score: float,
+        one_per_paper: bool,
+    ) -> dict[str, Any]:
+        """Pure BM25 search implementation. Unlike the course's, it leaves out the Chunks that score below the minimum
+        score, which the course's ignores (README.md)."""
+        builder = QueryBuilder(
+            query=query,
+            size=size,
+            from_=from_,
+            categories=categories,
+            latest_papers=latest,
+            one_per_paper=one_per_paper,
+            min_score=min_score,
+        )
         search_body = builder.build()
 
         response = self.client.search(index=self.index_name, body=search_body)
 
-        results: dict[str, Any] = {"total": response["hits"]["total"]["value"], "hits": []}
+        # The hits' total counts the Chunks that match.
+        total = response["aggregations"][PAPERS_MATCHING]["value"] if one_per_paper else response["hits"]["total"]["value"]
+        results: dict[str, Any] = {"total": total, "hits": []}
 
         for hit in response["hits"]["hits"]:
             chunk = hit["_source"]
@@ -272,29 +313,52 @@ class OpenSearchClient:
         return results
 
     def _search_hybrid_native(
-        self, query: str, query_embedding: list[float], size: int, categories: list[str] | None, min_score: float
+        self,
+        query: str,
+        query_embedding: list[float],
+        size: int,
+        from_: int,
+        categories: list[str] | None,
+        latest: bool,
+        min_score: float,
+        one_per_paper: bool,
     ) -> dict[str, Any]:
         """Native OpenSearch hybrid search with RRF pipeline.
 
         Unlike the course's, it filters both halves by Category, as OpenSearch 2.19's hybrid query has no filter they
         share: the k-NN half inside its search, which faiss allows. The course's filters only the BM25 half, so its k-NN
         half returns Chunks of any Category (README.md).
+
+        And unlike the course's, which ignores the offset and the newest-first order, it fetches the same window of fused
+        Chunks for every page, then orders and pages them itself, so that every page is cut from the same Chunks, or Papers
+        (README.md). OpenSearch cannot page over Papers: 2.19 ignores collapse in a hybrid query, and its collapse response
+        processor removes a Paper's other Chunks only from the page it fetched. Nor can it order a hybrid query by
+        publication date, then by score.
         """
-        builder = QueryBuilder(query=query, size=size * 2, from_=0, categories=categories, latest_papers=False)
+        # How many Chunks each half keeps, the same on every page, as OpenSearch 2.19 needs to page a hybrid query. A
+        # Search by words and meaning reaches only the Papers of their Chunks.
+        pagination_depth = self.settings.opensearch.hybrid_search_size_multiplier * LARGEST_PAGE
+
+        # Without the minimum score, which applies to the fused scores below, so that its query stays a bool query, whose
+        # filter the k-NN half takes.
+        builder = QueryBuilder(query=query, size=pagination_depth, from_=0, categories=categories, latest_papers=False)
         bm25_search_body = builder.build()
 
         bm25_query = bm25_search_body["query"]
 
-        knn_query: dict[str, Any] = {"vector": query_embedding, "k": size * 2}
+        knn_query: dict[str, Any] = {"vector": query_embedding, "k": pagination_depth}
         # The BM25 half's own filter, so that both halves filter alike.
         bm25_filter = bm25_query["bool"].get("filter")
         if bm25_filter:
             knn_query["filter"] = {"bool": {"filter": bm25_filter}}
 
-        hybrid_query = {"hybrid": {"queries": [bm25_query, {"knn": {"embedding": knn_query}}]}}
+        hybrid_query = {
+            "hybrid": {"queries": [bm25_query, {"knn": {"embedding": knn_query}}], "pagination_depth": pagination_depth}
+        }
 
         search_body = {
-            "size": size,
+            # The whole window: every Chunk either half keeps, which is twice as many when the halves share none.
+            "size": 2 * pagination_depth,
             "query": hybrid_query,
             "_source": bm25_search_body["_source"],
             "highlight": bm25_search_body["highlight"],
@@ -305,9 +369,10 @@ class OpenSearchClient:
             index=self.index_name, body=search_body, params={"search_pipeline": self.settings.opensearch.rrf_pipeline_name}
         )
 
-        results: dict[str, Any] = {"total": response["hits"]["total"]["value"], "hits": []}
+        chunks: list[dict[str, Any]] = []
 
         for hit in response["hits"]["hits"]:
+            # To the fused score, which a search's min_score is not: OpenSearch 2.19 applies it to each half's scores.
             if hit["_score"] < min_score:
                 continue
 
@@ -318,9 +383,20 @@ class OpenSearchClient:
             if "highlight" in hit:
                 chunk["highlights"] = hit["highlight"]
 
-            results["hits"].append(chunk)
+            chunks.append(chunk)
 
-        results["total"] = len(results["hits"])
+        if one_per_paper:
+            # Ranked by their fused scores, so each Paper's first Chunk is its best.
+            best_chunks: dict[str, dict[str, Any]] = {}
+            for chunk in chunks:
+                best_chunks.setdefault(chunk["arxiv_id"], chunk)
+            chunks = list(best_chunks.values())
+
+        if latest:
+            # A stable sort, so that those published at the same time stay ranked by their fused scores.
+            chunks.sort(key=lambda chunk: datetime.fromisoformat(chunk["published_date"]), reverse=True)
+
+        results: dict[str, Any] = {"total": len(chunks), "hits": chunks[from_ : from_ + size]}
         logger.info(f"Native hybrid search for '{query[:50]}...' returned {results['total']} results")
         return results
 

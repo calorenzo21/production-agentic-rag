@@ -3,6 +3,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The aggregation that counts the Papers a Search by words alone matches, when it returns one Chunk per Paper.
+PAPERS_MATCHING = "papers_matching"
+
 
 class QueryBuilder:
     """
@@ -21,6 +24,8 @@ class QueryBuilder:
         categories: list[str] | None = None,
         track_total_hits: bool = True,
         latest_papers: bool = False,
+        one_per_paper: bool = False,
+        min_score: float = 0.0,
     ):
         """Initialize query builder.
 
@@ -31,6 +36,9 @@ class QueryBuilder:
         :param categories: Filter by categories
         :param track_total_hits: Whether to track total hits accurately
         :param latest_papers: Sort by publication date instead of relevance
+        :param one_per_paper: Return only the best Chunk of each Paper, and count the Papers, which the course does not
+            (README.md)
+        :param min_score: Leave out the Chunks whose BM25 score is below it, which the course does not (README.md)
         """
         self.query = query
         self.size = size
@@ -38,6 +46,8 @@ class QueryBuilder:
         self.categories = categories
         self.track_total_hits = track_total_hits
         self.latest_papers = latest_papers
+        self.one_per_paper = one_per_paper
+        self.min_score = min_score
 
         if fields is None:
             # The course's leaves out the authors, which Week 3's searched, with this weight (README.md).
@@ -63,6 +73,14 @@ class QueryBuilder:
         if sort:
             query_body["sort"] = sort
 
+        if self.one_per_paper:
+            # Of each Paper's Chunks, the first in the order sorted, so the best, as all of a Paper's Chunks share its
+            # publication date. OpenSearch pages over them, and counts the distinct arXiv IDs, as the hits' total counts
+            # Chunks. Above its precision threshold, 3,000 by default, it counts them only approximately, so the count
+            # would drift as the Papers held grow: 40,000 is the highest threshold it takes.
+            query_body["collapse"] = {"field": "arxiv_id"}
+            query_body["aggs"] = {PAPERS_MATCHING: {"cardinality": {"field": "arxiv_id", "precision_threshold": 40_000}}}
+
         return query_body
 
     def _build_query(self) -> dict[str, Any]:
@@ -86,6 +104,11 @@ class QueryBuilder:
 
         if filter_clauses:
             bool_query["filter"] = filter_clauses
+
+        if self.min_score:
+            # Its own min_score leaves the Chunks below it out of the query, and so out of the count of Papers too. A
+            # search's min_score leaves them out of the hits only, in OpenSearch 2.19, so the count would still hold them.
+            return {"function_score": {"query": {"bool": bool_query}, "min_score": self.min_score}}
 
         return {"bool": bool_query}
 
