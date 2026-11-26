@@ -7,6 +7,11 @@ from src.schemas.indexing.models import ChunkMetadata, TextChunk
 
 logger = logging.getLogger(__name__)
 
+# The title of a section that holds a Paper's bibliography, in any case, with or without a number before it, such as
+# "References", "REFERENCES" or "6. References". Any other title stays, even one that holds the word, whether it only
+# mentions references, such as "Multiple References", or qualifies them, such as "Appendix References".
+BIBLIOGRAPHY_TITLE = re.compile(r"(?:\d+\.?\s+)?(?:references|bibliography)", re.IGNORECASE)
+
 
 class TextChunker:
     """Service for chunking text into overlapping segments.
@@ -122,9 +127,9 @@ class TextChunker:
             if words:
                 return [
                     TextChunk(
-                        # As the course has it: _reconstruct_text takes the words alone, so a text of fewer words than
-                        # the minimum raises a TypeError here.
-                        text=self._reconstruct_text(words, text),  # type: ignore[call-arg]
+                        # The course also passes the text, which _reconstruct_text does not take, so a text of fewer
+                        # words than the minimum raises a TypeError, and its Paper is not indexed (README.md).
+                        text=self._reconstruct_text(words),
                         metadata=ChunkMetadata(
                             chunk_index=0,
                             start_char=0,
@@ -201,14 +206,15 @@ class TextChunker:
         :param sections: Sections data
         :returns: List of text chunks
         """
-        # Parse sections data
-        sections_dict = self._parse_sections(sections)
-        if not sections_dict:
+        # Parse sections data. The course keys the sections by their titles, so of those that share a title it keeps only the
+        # last, in the first one's place (README.md).
+        section_items = self._parse_sections(sections)
+        if not section_items:
             return []
 
         # Filter and clean sections
-        sections_dict = self._filter_sections(sections_dict, abstract)
-        if not sections_dict:
+        section_items = self._filter_sections(section_items, abstract)
+        if not section_items:
             logger.warning(f"No meaningful sections found after filtering for {arxiv_id}")
             return []
 
@@ -218,8 +224,6 @@ class TextChunker:
         # Process sections using hybrid strategy
         chunks: list[TextChunk] = []
         small_sections: list[tuple[str, str, int]] = []  # Buffer for combining small sections
-
-        section_items = list(sections_dict.items())
 
         for i, (section_title, section_content) in enumerate(section_items):
             content_str = str(section_content) if section_content else ""
@@ -253,52 +257,52 @@ class TextChunker:
 
         return chunks
 
-    def _parse_sections(self, sections: dict[str, str] | str | list[Any]) -> dict[str, str]:
-        """Parse sections data into a dictionary."""
+    def _parse_sections(self, sections: dict[str, str] | str | list[Any]) -> list[tuple[str, str]]:
+        """Parse sections data into each section's title and text, in order."""
         if isinstance(sections, dict):
-            return sections
+            return list(sections.items())
         elif isinstance(sections, list):
             # Handle list of sections directly. They are JSON, so their titles and texts are whatever the JSON holds.
-            result: dict[Any, Any] = {}
+            result: list[tuple[Any, Any]] = []
             for i, section in enumerate(sections):
                 if isinstance(section, dict):
                     title = section.get("title", section.get("heading", f"Section {i + 1}"))
                     content = section.get("content", section.get("text", ""))
-                    result[title] = content
+                    result.append((title, content))
                 else:
-                    result[f"Section {i + 1}"] = str(section)
+                    result.append((f"Section {i + 1}", str(section)))
             return result
         elif isinstance(sections, str):
             try:
                 parsed = json.loads(sections)
                 if isinstance(parsed, dict):
-                    return parsed
+                    return list(parsed.items())
                 elif isinstance(parsed, list):
-                    # Convert list to dict with enumerated keys
-                    result = {}
+                    # Convert list to titles and texts, with enumerated titles where missing
+                    result = []
                     for i, section in enumerate(parsed):
                         if isinstance(section, dict):
                             title = section.get("title", section.get("heading", f"Section {i + 1}"))
                             content = section.get("content", section.get("text", ""))
-                            result[title] = content
+                            result.append((title, content))
                         else:
-                            result[f"Section {i + 1}"] = str(section)
+                            result.append((f"Section {i + 1}", str(section)))
                     return result
             except json.JSONDecodeError:
                 logger.warning("Failed to parse sections JSON")
-        return {}
+        return []
 
-    def _filter_sections(self, sections_dict: dict[str, str], abstract: str) -> dict[str, str]:
+    def _filter_sections(self, section_items: list[tuple[str, str]], abstract: str) -> list[tuple[str, str]]:
         """Filter out unwanted sections and avoid duplication.
 
-        :param sections_dict: Dictionary of sections
+        :param section_items: Each section's title and text, in order
         :param abstract: Paper abstract for duplication check
-        :returns: Filtered dictionary of sections
+        :returns: The title and text of each section kept, in order
         """
-        filtered = {}
+        filtered = []
         abstract_words = set(abstract.lower().split())
 
-        for section_title, section_content in sections_dict.items():
+        for section_title, section_content in section_items:
             content_str = str(section_content).strip()
 
             # Skip empty sections
@@ -307,6 +311,10 @@ class TextChunker:
 
             # Skip metadata/header sections based on title
             if self._is_metadata_section(section_title):
+                continue
+
+            # The course chunks the works the Paper cites too, and a Search then matches the Paper by them (README.md).
+            if self._is_bibliography_section(section_title):
                 continue
 
             # Skip sections that are duplicates of the abstract
@@ -319,7 +327,7 @@ class TextChunker:
                 logger.debug(f"Skipping metadata section: {section_title}")
                 continue
 
-            filtered[section_title] = content_str
+            filtered.append((section_title, content_str))
 
         return filtered
 
@@ -347,6 +355,10 @@ class TextChunker:
 
         # Check if title contains only metadata indicators
         return any(indicator in title_lower and len(title_lower) < 20 for indicator in metadata_indicators)
+
+    def _is_bibliography_section(self, section_title: str) -> bool:
+        """Whether a section's title says it holds the Paper's bibliography: the works it cites, rather than its own text."""
+        return BIBLIOGRAPHY_TITLE.fullmatch(section_title.strip()) is not None
 
     def _is_duplicate_abstract(self, content: str, abstract: str, abstract_words: set[str]) -> bool:
         """Check if section content is a duplicate of the abstract."""
@@ -416,13 +428,15 @@ class TextChunker:
             combined_content.append(f"Section: {section_title}\n\n{content}")
             total_words += word_count
 
-        combined_text = f"{header}{'\\n\\n'.join(combined_content)}"
+        # A blank line between sections, here and when merged below, where the course writes a literal "\n", a backslash
+        # followed by an n, which is then searched and embedded (README.md).
+        combined_text = f"{header}{'\n\n'.join(combined_content)}"
 
         # If still too small, combine with previous chunk if possible
         if total_words + len(header.split()) < 200 and existing_chunks:
             # Try to merge with previous chunk
             prev_chunk = existing_chunks[-1]
-            merged_text = f"{prev_chunk.text}\\n\\n{'\\n\\n'.join(combined_content)}"
+            merged_text = f"{prev_chunk.text}\n\n{'\n\n'.join(combined_content)}"
 
             # Update the previous chunk
             existing_chunks[-1] = TextChunk(

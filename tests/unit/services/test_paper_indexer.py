@@ -78,6 +78,11 @@ def chunk_ids(opensearch: OpenSearch, arxiv_id: str) -> list[tuple[str, str | No
     return [(hit["_id"], hit["_source"].get("chunk_id")) for hit in chunk_hits(opensearch, arxiv_id)]
 
 
+def section_titles(opensearch: OpenSearch, *arxiv_ids: str) -> dict[str, list[str | None]]:
+    """The section of each Chunk the Index holds of each Paper with these arXiv IDs, in the order of their positions."""
+    return {arxiv_id: [chunk["section_title"] for chunk in chunks(opensearch, arxiv_id)] for arxiv_id in arxiv_ids}
+
+
 def indexed_papers(opensearch: OpenSearch) -> list[str]:
     """The arXiv IDs of the Papers the Index holds Chunks of, in order."""
     response = opensearch.search(index=chunk_index(), body={"query": {"match_all": {}}, "size": 1000})
@@ -148,6 +153,102 @@ async def test_with_section_based_chunking_off_a_papers_content_is_chunked_into_
     # Windows of 600 words that overlap by 100: the Content's first 600 words, then its last 200, with no section.
     windows = [(chunk["section_title"], chunk["chunk_word_count"]) for chunk in chunks(opensearch, "2411.00001")]
     assert windows == [(None, 600), (None, 200)]
+
+
+async def test_no_chunk_holds_a_section_titled_references_or_bibliography(database: BaseDatabase, opensearch: OpenSearch) -> None:
+    with_references = content(
+        ("Method", words(300, about="method")),
+        ("References", words(300, about="cited")),
+        # The Paper's own text, though it comes after the works it cites.
+        ("Appendix", words(300, about="appendix")),
+    )
+    with_bibliography = content(("Method", words(300, about="method")), ("Bibliography", words(300, about="cited")))
+    hold(database, paper("2411.00001", **with_references), paper("2411.00002", **with_bibliography))
+
+    await rebuild(database)
+
+    sections = section_titles(opensearch, "2411.00001", "2411.00002")
+    assert sections == {"2411.00001": ["Method", "Appendix"], "2411.00002": ["Method"]}
+
+
+async def test_no_chunk_holds_a_bibliography_whose_title_is_in_capitals_or_numbered_but_a_title_mentioning_references_stays(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    # As Docling reads the titles of some Papers' bibliographies.
+    in_capitals = content(("Method", words(300, about="method")), ("REFERENCES", words(300, about="cited")))
+    numbered = content(("Method", words(300, about="method")), ("6. References", words(300, about="cited")))
+    # The Paper's own text, about the reference answers it compares its outputs with.
+    mentioning_references = content(("Method", words(300, about="method")), ("4.3 Multiple References", words(300, about="gold")))
+    hold(
+        database,
+        paper("2411.00001", **in_capitals),
+        paper("2411.00002", **numbered),
+        paper("2411.00003", **mentioning_references),
+    )
+
+    await rebuild(database)
+
+    sections = section_titles(opensearch, "2411.00001", "2411.00002", "2411.00003")
+    assert sections == {"2411.00001": ["Method"], "2411.00002": ["Method"], "2411.00003": ["Method", "4.3 Multiple References"]}
+
+
+async def test_sections_that_share_a_title_are_all_kept_each_in_its_place(database: BaseDatabase, opensearch: OpenSearch) -> None:
+    sections = content(
+        # Each case study ends with its summary, under the same title, as some Papers' subsections share theirs.
+        ("Case Study: Code Review", words(300, about="review")),
+        ("Summary", words(300, about="lesson")),
+        ("Case Study: Pair Programming", words(300, about="pairing")),
+        ("Summary", words(300, about="takeaway")),
+    )
+    hold(database, paper("2411.00001", **sections))
+
+    await rebuild(database)
+
+    # The last word a Chunk holds tells whose text it is.
+    sections_and_last_words = [
+        (chunk["section_title"], chunk["chunk_text"].split()[-1]) for chunk in chunks(opensearch, "2411.00001")
+    ]
+    assert sections_and_last_words == [
+        ("Case Study: Code Review", "review299"),
+        ("Summary", "lesson299"),
+        ("Case Study: Pair Programming", "pairing299"),
+        ("Summary", "takeaway299"),
+    ]
+
+
+async def test_the_sections_a_chunk_combines_are_separated_by_blank_lines_not_by_a_literal_backslash_n(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    introduction, related_work = words(50, about="motivation"), words(60, about="prior")
+    method, conclusion = words(300, about="method"), words(30, about="conclusion")
+    sections = content(
+        # Under 100 words each, so combined into one Chunk.
+        ("Introduction", introduction),
+        ("Related Work", related_work),
+        ("Method", method),
+        # Under 100 words, and under 200 with the title and abstract, so merged into the Chunk before it.
+        ("Conclusion", conclusion),
+    )
+    hold(database, paper("2411.00001", **sections))
+
+    await rebuild(database)
+
+    header = "The title of 2411.00001\n\nAbstract: The abstract of 2411.00001.\n\n"
+    assert [chunk["chunk_text"] for chunk in chunks(opensearch, "2411.00001")] == [
+        f"{header}Section: Introduction\n\n{introduction}\n\nSection: Related Work\n\n{related_work}",
+        f"{header}Section: Method\n\n{method}\n\nSection: Conclusion\n\n{conclusion}",
+    ]
+
+
+async def test_a_short_content_without_sections_is_indexed_as_one_chunk_of_its_words(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    # Fewer words than the 100 a Chunk should hold at least, and no section to chunk them by.
+    hold(database, paper("2411.00001", raw_text=words(40, about="content"), sections=[], pdf_processed=True))
+
+    await rebuild(database)
+
+    assert [chunk["chunk_text"] for chunk in chunks(opensearch, "2411.00001")] == [words(40, about="content")]
 
 
 async def test_after_a_rebuild_the_index_holds_every_paper_postgresql_holds_and_the_rebuild_counts_their_papers_and_chunks(
@@ -459,8 +560,7 @@ async def test_a_paper_whose_embedding_keeps_failing_keeps_its_previous_chunks_w
     with pytest.raises(PapersNotIndexed, match=re.escape("could not index 2411.00002")):
         await index(database, ["2411.00001", "2411.00002", "2411.00003"])
 
-    arxiv_ids = ["2411.00001", "2411.00002", "2411.00003"]
-    sections = {arxiv_id: [chunk["section_title"] for chunk in chunks(opensearch, arxiv_id)] for arxiv_id in arxiv_ids}
+    sections = section_titles(opensearch, "2411.00001", "2411.00002", "2411.00003")
     # Each new Paper's one Chunk, its title and abstract, has no section.
     assert sections == {
         "2411.00001": [None],
