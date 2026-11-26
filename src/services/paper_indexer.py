@@ -98,7 +98,9 @@ class PaperIndexer:
     async def index_papers(self, arxiv_ids: list[str]) -> dict[str, int]:
         """
         Index the Papers with these arXiv IDs, without their Versions, into the Index, and count the Papers to index, and
-        the Papers and Chunks indexed. The Index must exist, as the DAG's setup task and the API's startup create it.
+        the Papers and Chunks indexed. The Index must exist, as the DAG's setup task and the API's startup create it. The
+        Chunks of a Paper the Index already holds, as one updated to a new Version, are replaced, and whatever fails, its
+        previous Chunks stay until its new ones are written.
 
         Raises PapersNotIndexed before indexing any Paper when OpenSearch does not answer or the Index does not exist.
         Otherwise it indexes every Paper it can, then raises it naming the others.
@@ -155,28 +157,33 @@ class PaperIndexer:
                     selected += 1
                     # The course logs a Paper it cannot index and goes on as if it had (README.md).
                     try:
-                        results = await self._index_paper(paper, jina_client, replace_existing=replace_existing)
+                        chunks_written, failure = await self._index_paper(paper, jina_client, replace_existing=replace_existing)
                     except Exception as e:
                         logger.error(f"Could not index {paper.arxiv_id}: {e}")
                         not_indexed.append(paper.arxiv_id)
                         continue
-                    # Including those of a Paper OpenSearch rejected another Chunk of, as the Index holds them.
-                    chunks_indexed += results["success"]
-                    if results["failed"]:
-                        logger.error(f"Could not index {paper.arxiv_id}: OpenSearch rejected {results['failed']} of its Chunks")
+                    # Including those of a Paper it could not wholly index, as the Index holds them.
+                    chunks_indexed += chunks_written
+                    if failure is not None:
+                        logger.error(f"Could not index {paper.arxiv_id}: {failure}")
                         not_indexed.append(paper.arxiv_id)
         return selected, chunks_indexed, not_indexed
 
-    async def _index_paper(self, paper: Row[Any], jina_client: JinaEmbeddingsClient, *, replace_existing: bool) -> dict[str, int]:
+    async def _index_paper(
+        self, paper: Row[Any], jina_client: JinaEmbeddingsClient, *, replace_existing: bool
+    ) -> tuple[int, str | None]:
         """
-        Index a Paper as its Chunks, and count those OpenSearch indexed and those it rejected. Raises when it cannot index
-        any, as when the Paper cannot be chunked or embedded, or OpenSearch does not answer.
+        Index a Paper as its Chunks, and count those OpenSearch indexed, with why it could not wholly index the Paper,
+        when it could not: OpenSearch rejected some of its Chunks, or failed to delete its previous ones left over. Raises
+        when it cannot index any, as when the Paper cannot be chunked or embedded, or OpenSearch does not answer.
 
-        To replace the Chunks the Index holds of the Paper, as when it has a new Version, it deletes them before making
-        its new ones, as the course does. A rebuild has none to replace, as it starts from an empty Index.
+        To replace the Chunks the Index holds of the Paper, as when it has a new Version, it writes each new Chunk over
+        the one at its position, and once OpenSearch has indexed them all, it deletes the Paper's other Chunks: those
+        beyond their count, and any an Index built before each Chunk had an ID holds under a random one. So whatever
+        fails, the Paper's previous Chunks stay until its new ones are written. The course deletes them all first, before
+        even embedding the new ones, and goes on when it cannot (README.md). A rebuild has none to replace, as it starts
+        from an empty Index.
         """
-        if replace_existing:
-            self.opensearch_client.delete_paper_chunks(paper.arxiv_id)
         chunks = self.chunker.chunk_paper(
             title=paper.title,
             abstract=paper.abstract,
@@ -187,12 +194,27 @@ class PaperIndexer:
         )
         embeddings = await jina_client.embed_passages(texts=[chunk.text for chunk in chunks], batch_size=50)
         entries = [self._entry(paper, chunk, embedding) for chunk, embedding in zip(chunks, embeddings, strict=True)]
-        return self.opensearch_client.bulk_index_chunks(entries)
+        results = self.opensearch_client.bulk_index_chunks(entries)
+        if results["failed"]:
+            return results["success"], f"OpenSearch rejected {results['failed']} of its Chunks"
+        if replace_existing:
+            try:
+                self.opensearch_client.delete_paper_chunks(paper.arxiv_id, keeping=[entry["chunk_id"] for entry in entries])
+            except OpenSearchException as e:
+                return results["success"], f"OpenSearch failed to delete its previous Chunks left over: {e}"
+        return results["success"], None
 
     @staticmethod
     def _entry(paper: Row[Any], chunk: TextChunk, embedding: list[float]) -> dict[str, Any]:
-        """A Chunk's entry in the Index: the course's, with its Paper's PDF link, and its authors as a list."""
+        """
+        A Chunk's entry in the Index: the course's, with its ID, its Paper's PDF link, and its authors as a list. The
+        Index holds it under that ID.
+        """
         return {
+            # Its Paper's arXiv ID, without its Version, and its position, so that indexing the Paper again writes each
+            # Chunk over the one at its position. The course lets OpenSearch pick a random ID, and never writes this field
+            # (README.md).
+            "chunk_id": f"{chunk.arxiv_id}_{chunk.metadata.chunk_index}",
             "arxiv_id": chunk.arxiv_id,
             "paper_id": chunk.paper_id,
             "chunk_index": chunk.metadata.chunk_index,

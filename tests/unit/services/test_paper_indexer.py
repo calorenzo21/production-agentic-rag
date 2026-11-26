@@ -56,12 +56,26 @@ def week3_index() -> str:
     return Settings().opensearch.index_name
 
 
-def chunks(opensearch: OpenSearch, arxiv_id: str) -> list[dict[str, Any]]:
-    """The Chunks the Index holds of the Paper with this arXiv ID, in the order of their positions."""
+def chunk_hits(opensearch: OpenSearch, arxiv_id: str) -> list[dict[str, Any]]:
+    """What the Index holds of each Chunk of the Paper with this arXiv ID, its ID included, in the order of their positions."""
     response = opensearch.search(
         index=chunk_index(), body={"query": {"term": {"arxiv_id": arxiv_id}}, "sort": [{"chunk_index": "asc"}], "size": 100}
     )
-    return [hit["_source"] for hit in response["hits"]["hits"]]
+    hits: list[dict[str, Any]] = response["hits"]["hits"]
+    return hits
+
+
+def chunks(opensearch: OpenSearch, arxiv_id: str) -> list[dict[str, Any]]:
+    """The Chunks the Index holds of the Paper with this arXiv ID, in the order of their positions."""
+    return [hit["_source"] for hit in chunk_hits(opensearch, arxiv_id)]
+
+
+def chunk_ids(opensearch: OpenSearch, arxiv_id: str) -> list[tuple[str, str | None]]:
+    """
+    The ID the Index holds each Chunk of the Paper with this arXiv ID under, and the ID the Chunk itself holds, in the
+    order of their positions.
+    """
+    return [(hit["_id"], hit["_source"].get("chunk_id")) for hit in chunk_hits(opensearch, arxiv_id)]
 
 
 def indexed_papers(opensearch: OpenSearch) -> list[str]:
@@ -109,6 +123,17 @@ async def test_each_chunk_holds_its_papers_pdf_link(database: BaseDatabase, open
     await rebuild(database)
 
     assert [chunk.get("pdf_url") for chunk in chunks(opensearch, "2411.00001")] == ["https://arxiv.org/pdf/2411.00001v2"] * 2
+
+
+async def test_each_chunk_is_identified_by_its_papers_arxiv_id_without_its_version_and_its_position_and_holds_that_id(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    two_sections = content(("Method", words(300, about="method")), ("Results", words(300, about="results")))
+    hold(database, paper("2411.00001", version=2, **two_sections))
+
+    await rebuild(database)
+
+    assert chunk_ids(opensearch, "2411.00001") == [("2411.00001_0", "2411.00001_0"), ("2411.00001_1", "2411.00001_1")]
 
 
 async def test_with_section_based_chunking_off_a_papers_content_is_chunked_into_plain_word_windows(
@@ -236,7 +261,27 @@ async def test_indexing_given_arxiv_ids_indexes_exactly_those_papers_and_no_othe
     assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
 
 
-async def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_with_no_chunk_of_its_old_version_left(
+async def test_a_paper_updated_to_a_new_version_that_gains_chunks_has_all_its_new_ones_none_duplicated(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001", version=1, **content(("Earlier Method", words(300, about="method")))))
+    await index(database, ["2411.00001"])
+    # Today's Ingestion stores its new Version, with three sections, which updates the Paper's row.
+    new_version = content(
+        ("Revised Method", words(300, about="revision")),
+        ("Revised Results", words(300, about="results")),
+        ("Revised Discussion", words(300, about="discussion")),
+    )
+    hold(database, paper("2411.00001", version=2, **new_version))
+
+    await index(database, ["2411.00001"])
+
+    sections = [chunk["section_title"] for chunk in chunks(opensearch, "2411.00001")]
+    assert sections == ["Revised Method", "Revised Results", "Revised Discussion"]
+
+
+async def test_a_paper_updated_to_a_new_version_that_loses_chunks_keeps_only_its_new_ones_none_left_over(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:
     create_chunk_index(opensearch)
@@ -255,6 +300,66 @@ async def test_a_paper_updated_to_a_new_version_is_indexed_with_its_new_content_
     await index(database, ["2411.00001"])
 
     assert [chunk["section_title"] for chunk in chunks(opensearch, "2411.00001")] == ["Revised Method"]
+
+
+async def test_indexing_a_paper_again_deletes_any_of_its_chunks_an_index_built_before_chunk_ids_holds(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_chunk_index(opensearch)
+    hold(database, paper("2411.00001"))
+    # As an Index built before each Chunk had an ID holds it: under a random ID OpenSearch picked, without chunk_id.
+    opensearch.index(
+        index=chunk_index(),
+        body={"arxiv_id": "2411.00001", "chunk_index": 0, "chunk_text": "The title of 2411.00001"},
+        refresh=True,
+    )
+
+    await index(database, ["2411.00001"])
+
+    assert chunk_ids(opensearch, "2411.00001") == [("2411.00001_0", "2411.00001_0")]
+
+
+async def test_a_paper_whose_new_version_opensearch_rejects_keeps_its_previous_chunks(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_chunk_index(opensearch)
+    first_version = content(
+        ("Earlier Method", words(300, about="method")),
+        ("Earlier Results", words(300, about="results")),
+        ("Earlier Discussion", words(300, about="discussion")),
+    )
+    hold(database, paper("2411.00001", version=1, **first_version))
+    await index(database, ["2411.00001"])
+    # Its new Version, with one section, is listed in a Category OpenSearch rejects, which each of its Chunks holds.
+    new_version = content(("Revised Method", words(300, about="revision")))
+    hold(database, paper("2411.00001", version=2, categories=[CATEGORY_TOO_LONG_FOR_A_KEYWORD], **new_version))
+
+    with pytest.raises(PapersNotIndexed):
+        await index(database, ["2411.00001"])
+
+    sections = [chunk["section_title"] for chunk in chunks(opensearch, "2411.00001")]
+    assert sections == ["Earlier Method", "Earlier Results", "Earlier Discussion"]
+
+
+async def test_when_opensearch_fails_to_delete_a_papers_chunks_left_over_indexing_fails_naming_it_and_counts_its_new_chunks(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    create_chunk_index(opensearch)
+    first_version = content(
+        ("Earlier Method", words(300, about="method")),
+        ("Earlier Results", words(300, about="results")),
+        ("Earlier Discussion", words(300, about="discussion")),
+    )
+    hold(database, paper("2411.00001", version=1, **first_version))
+    await index(database, ["2411.00001"])
+    new_version = content(("Revised Method", words(300, about="revision")), ("Revised Results", words(300, about="outcome")))
+    hold(database, paper("2411.00001", version=2, **new_version))
+    # OpenSearch now refuses to search the Index, which deleting by a query needs, though it still writes into it.
+    opensearch.indices.put_settings(index=chunk_index(), body={"index.blocks.read": True})
+
+    # Its two new Chunks, which the Index holds, with its previous third Chunk left over.
+    with pytest.raises(PapersNotIndexed, match=re.escape("as 2 Chunks, but could not index 2411.00001")):
+        await index(database, ["2411.00001"])
 
 
 async def test_when_opensearch_rejects_a_chunk_indexing_given_arxiv_ids_indexes_the_other_papers_then_fails_naming_its_paper(
@@ -334,18 +439,34 @@ async def test_with_opensearch_not_answering_a_rebuild_fails(database: BaseDatab
         await rebuild(database)
 
 
-async def test_a_paper_whose_embedding_keeps_failing_does_not_stop_the_others_and_indexing_given_arxiv_ids_fails_naming_it(
+async def test_a_paper_whose_embedding_keeps_failing_keeps_its_previous_chunks_while_indexing_goes_on_then_fails_naming_it(
     database: BaseDatabase, opensearch: OpenSearch, jina: FakeJina
 ) -> None:
     create_chunk_index(opensearch)
-    hold(database, paper("2411.00001"), paper("2411.00002"), paper("2411.00003"))
+    first_version = content(
+        ("Earlier Method", words(300, about="method")),
+        ("Earlier Results", words(300, about="results")),
+        ("Earlier Discussion", words(300, about="discussion")),
+    )
+    hold(database, paper("2411.00002", version=1, **first_version))
+    await index(database, ["2411.00002"])
+    # Today's Ingestion stores two new Papers, and its new Version, with one section.
+    new_version = content(("Revised Method", words(300, about="revision")))
+    hold(database, paper("2411.00001"), paper("2411.00002", version=2, **new_version), paper("2411.00003"))
     # Each of a Paper's Chunks begins with its title, which holds its arXiv ID.
     jina.keeps_failing(Failure.SERVER_ERROR, on="2411.00002")
 
     with pytest.raises(PapersNotIndexed, match=re.escape("could not index 2411.00002")):
         await index(database, ["2411.00001", "2411.00002", "2411.00003"])
 
-    assert indexed_papers(opensearch) == ["2411.00001", "2411.00003"]
+    arxiv_ids = ["2411.00001", "2411.00002", "2411.00003"]
+    sections = {arxiv_id: [chunk["section_title"] for chunk in chunks(opensearch, arxiv_id)] for arxiv_id in arxiv_ids}
+    # Each new Paper's one Chunk, its title and abstract, has no section.
+    assert sections == {
+        "2411.00001": [None],
+        "2411.00002": ["Earlier Method", "Earlier Results", "Earlier Discussion"],
+        "2411.00003": [None],
+    }
 
 
 async def test_embedding_is_retried_through_rate_limits_server_errors_and_timeouts_and_the_paper_is_then_indexed(

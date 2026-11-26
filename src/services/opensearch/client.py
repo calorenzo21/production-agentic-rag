@@ -171,13 +171,15 @@ class OpenSearchClient:
         """Bulk index multiple chunks.
 
         Unlike the course's, it goes on past a Chunk OpenSearch rejects, and counts it. The course's raises at the first
-        one, so its count of failed Chunks is always 0 (README.md). It still raises when OpenSearch does not answer.
+        one, so its count of failed Chunks is always 0 (README.md). It still raises when OpenSearch does not answer. And
+        it indexes each Chunk under the ID its entry holds, over any Chunk the Index already holds under it, where the
+        course's lets OpenSearch pick a random ID (README.md).
 
         :param chunks: The Chunks' entries
         :returns: Statistics
         """
         try:
-            actions = [{"_index": self.index_name, "_source": chunk} for chunk in chunks]
+            actions = [{"_index": self.index_name, "_id": chunk["chunk_id"], "_source": chunk} for chunk in chunks]
 
             success, failed = helpers.bulk(self.client, actions, refresh=True, raise_on_error=False)
 
@@ -192,24 +194,22 @@ class OpenSearchClient:
             logger.error(f"Bulk chunk indexing error: {e}")
             raise
 
-    def delete_paper_chunks(self, arxiv_id: str) -> bool:
-        """Delete all chunks for a specific paper.
+    def delete_paper_chunks(self, arxiv_id: str, keeping: list[str]) -> None:
+        """Delete the chunks of a specific paper, but those with the IDs it is keeping.
+
+        Unlike the course's, which deletes all of a Paper's Chunks, it keeps those the Paper's new Chunks were just
+        written as, and it raises OpenSearchException when OpenSearch fails to delete the others, as when it does not
+        answer, where the course's logs the failure and goes on, leaving them in the Index (README.md).
 
         :param arxiv_id: ArXiv ID of the paper
-        :returns: True if deletion was successful
+        :param keeping: The IDs of the Paper's Chunks to keep
         """
+        query = {"bool": {"filter": [{"term": {"arxiv_id": arxiv_id}}], "must_not": [{"ids": {"values": keeping}}]}}
         try:
-            response = self.client.delete_by_query(
-                index=self.index_name, body={"query": {"term": {"arxiv_id": arxiv_id}}}, refresh=True
-            )
-
-            deleted: int = response.get("deleted", 0)
-            logger.info(f"Deleted {deleted} chunks for paper {arxiv_id}")
-            return deleted > 0
-
-        except Exception as e:
-            logger.error(f"Error deleting chunks: {e}")
-            return False
+            response = self.client.delete_by_query(index=self.index_name, body={"query": query}, refresh=True)
+        except TransportError as e:
+            raise OpenSearchException(str(e)) from e
+        logger.info(f"Deleted {response.get('deleted', 0)} chunks for paper {arxiv_id}")
 
     def search_unified(
         self,
