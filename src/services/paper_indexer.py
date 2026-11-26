@@ -58,12 +58,18 @@ class PaperIndexer:
 
     async def rebuild_index(self) -> dict[str, int]:
         """
-        Recreate the Index with the course's mapping, then index every Paper the curator holds, and count the Papers
-        held, and the Papers and Chunks indexed. Until it ends, Searches find fewer Papers, as the Index starts empty.
+        Delete the Week 3 index, and recreate the Index with the course's mapping, then index every Paper the curator
+        holds, and count the Papers held, and the Papers and Chunks indexed. Until it ends, Searches find fewer Papers, as
+        the Index starts empty.
 
-        Raises PapersNotIndexed before indexing any Paper when OpenSearch does not recreate the Index, as when it does not
-        answer. Otherwise it indexes every Paper it can, then raises it naming the others.
+        Raises PapersNotIndexed before indexing any Paper when OpenSearch does not delete the Week 3 index or recreate the
+        Index, as when it does not answer. Otherwise it indexes every Paper it can, then raises it naming the others.
         """
+        try:
+            # First, so that a failure leaves the Index as it was.
+            self.opensearch_client.delete_week3_index()
+        except OpenSearchException as e:
+            raise PapersNotIndexed(f"Could not delete the Week 3 index, so indexed no Paper: {e}", papers_indexed=0) from e
         if not self.opensearch_client.setup_indices(force=True)["hybrid_index"]:
             # The client logs why. Whatever Index is left may have another mapping, or none, which indexing would create.
             raise PapersNotIndexed(
@@ -175,7 +181,7 @@ class PaperIndexer:
 
     @staticmethod
     def _entry(paper: Row[Any], chunk: TextChunk, embedding: list[float]) -> dict[str, Any]:
-        """A Chunk's entry in the Index: the course's, with its Paper's PDF link."""
+        """A Chunk's entry in the Index: the course's, with its Paper's PDF link, and its authors as a list."""
         return {
             "arxiv_id": chunk.arxiv_id,
             "paper_id": chunk.paper_id,
@@ -189,7 +195,8 @@ class PaperIndexer:
             "embedding_model": "jina-embeddings-v3",
             # Denormalized paper metadata for efficient search
             "title": paper.title,
-            "authors": ", ".join(paper.authors),
+            # The course's joins them into one string, which a Search returns as it is (README.md).
+            "authors": paper.authors,
             "abstract": paper.abstract,
             "categories": paper.categories,
             "published_date": paper.published_date.isoformat(),

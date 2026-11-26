@@ -2,12 +2,12 @@ import logging
 from typing import Any
 
 from opensearchpy import OpenSearch, helpers
-from opensearchpy.exceptions import NotFoundError, RequestError, TransportError
+from opensearchpy.exceptions import RequestError, TransportError
 from src.config import Settings, get_settings
 from src.exceptions import OpenSearchException
 
 from .index_config_hybrid import arxiv_papers_chunks_mapping
-from .query_builder import PaperQueryBuilder
+from .query_builder import QueryBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,21 @@ class OpenSearchClient:
         except TransportError as e:
             raise OpenSearchException(str(e)) from e
 
+    def delete_week3_index(self) -> None:
+        """
+        Delete the Week 3 index, which held each Paper whole, and is named the index name alone, if it is still there. The
+        chunk index replaces it, and the course leaves it behind, as it starts Week 4 from empty volumes (README.md).
+        Raises OpenSearchException when OpenSearch fails to delete it, as when it does not answer.
+        """
+        week3_index = self.settings.opensearch.index_name
+        try:
+            if not self.client.indices.exists(index=week3_index):
+                return
+            self.client.indices.delete(index=week3_index)
+        except TransportError as e:
+            raise OpenSearchException(str(e)) from e
+        logger.info(f"Deleted the Week 3 index {week3_index}, which {self.index_name} replaces")
+
     def bulk_index_chunks(self, chunks: list[dict[str, Any]]) -> dict[str, int]:
         """Bulk index multiple chunks.
 
@@ -156,71 +171,52 @@ class OpenSearchClient:
             logger.error(f"Error deleting chunks: {e}")
             return False
 
-    def search_papers(
+    def search_unified(
         self,
         query: str,
         size: int = 10,
         from_: int = 0,
-        fields: list[str] | None = None,
         categories: list[str] | None = None,
-        track_total_hits: bool = True,
-        latest_papers: bool = False,
+        latest: bool = False,
     ) -> dict[str, Any]:
-        """Search papers using BM25 scoring with query builder.
+        """Search the Chunks the Index holds by their words, with BM25.
 
-        :param query: Search query text
+        Unlike the course's, it raises OpenSearchException when OpenSearch fails the Search, as when it does not answer
+        or the Index does not exist, rather than answering as if no Chunk matched (README.md).
+
+        :param query: Text query for search
         :param size: Number of results to return
         :param from_: Offset for pagination
-        :param fields: List of fields to search in (default: title, abstract, authors)
-        :param categories: Filter by categories
-        :param track_total_hits: Whether to track total hits accurately
-        :param latest_papers: Sort by publication date instead of relevance
-        :type query: str
-        :type size: int
-        :type from_: int
-        :type fields: Optional[List[str]]
-        :type categories: Optional[List[str]]
-        :type track_total_hits: bool
-        :type latest_papers: bool
-        :returns: Search results with hits and metadata
-        :rtype: Dict[str, Any]
+        :param categories: Optional category filter
+        :param latest: Sort by date instead of relevance
+        :returns: Search results
         """
         try:
-            # Build query using query builder
-            query_builder = PaperQueryBuilder(
-                query=query,
-                size=size,
-                from_=from_,
-                fields=fields,
-                categories=categories,
-                track_total_hits=track_total_hits,
-                latest_papers=latest_papers,
-            )
+            return self._search_bm25_only(query=query, size=size, from_=from_, categories=categories, latest=latest)
+        except TransportError as e:
+            raise OpenSearchException(f"OpenSearch failed the Search: {e}") from e
 
-            search_body = query_builder.build()
+    def _search_bm25_only(self, query: str, size: int, from_: int, categories: list[str] | None, latest: bool) -> dict[str, Any]:
+        """Pure BM25 search implementation."""
+        builder = QueryBuilder(query=query, size=size, from_=from_, categories=categories, latest_papers=latest)
+        search_body = builder.build()
 
-            # Execute search
-            response = self.client.search(index=self.index_name, body=search_body)
+        response = self.client.search(index=self.index_name, body=search_body)
 
-            # Format results
-            results = {"total": response["hits"]["total"]["value"], "hits": []}
+        results: dict[str, Any] = {"total": response["hits"]["total"]["value"], "hits": []}
 
-            for hit in response["hits"]["hits"]:
-                paper = hit["_source"]
-                paper["score"] = hit["_score"]
-                if "highlight" in hit:
-                    paper["highlights"] = hit["highlight"]
-                results["hits"].append(paper)
+        for hit in response["hits"]["hits"]:
+            chunk = hit["_source"]
+            chunk["score"] = hit["_score"]
+            chunk["chunk_id"] = hit["_id"]
 
-            logger.info(f"Search for '{query}' returned {results['total']} results")
-            return results
+            if "highlight" in hit:
+                chunk["highlights"] = hit["highlight"]
 
-        except NotFoundError:
-            logger.error(f"Index {self.index_name} not found")
-            return {"total": 0, "hits": [], "error": "Index not found"}
-        except Exception as e:
-            logger.error(f"Search error: {e}")
-            return {"total": 0, "hits": [], "error": str(e)}
+            results["hits"].append(chunk)
+
+        logger.info(f"BM25 search for '{query[:50]}...' returned {results['total']} results")
+        return results
 
     def get_index_stats(self) -> dict[str, Any]:
         """Get statistics about the index.
@@ -254,63 +250,3 @@ class OpenSearchClient:
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
-
-    def get_cluster_info(self) -> dict[str, Any] | None:
-        """Get OpenSearch cluster information.
-
-        :returns: Dictionary with cluster info or None if error
-        :rtype: Optional[Dict[str, Any]]
-        """
-        try:
-            info: dict[str, Any] = self.client.info()
-            return info
-        except Exception as e:
-            logger.error(f"Error getting cluster info: {e}")
-            return None
-
-    def get_cluster_health(self) -> dict[str, Any] | None:
-        """Get detailed cluster health information.
-
-        :returns: Dictionary with cluster health details or None if error
-        :rtype: Optional[Dict[str, Any]]
-        """
-        try:
-            health: dict[str, Any] = self.client.cluster.health()
-            return health
-        except Exception as e:
-            logger.error(f"Error getting cluster health: {e}")
-            return None
-
-    def get_index_mapping(self) -> dict[str, Any] | None:
-        """Get index mapping (alias for get_mappings for compatibility).
-
-        :returns: Dictionary with index mapping or None if error
-        :rtype: Optional[Dict[str, Any]]
-        """
-        try:
-            mappings = self.client.indices.get_mapping(index=self.index_name)
-            # Extract just the properties from the nested structure
-            if mappings and self.index_name in mappings:
-                mapping: dict[str, Any] = mappings[self.index_name].get("mappings", {})
-                return mapping
-            return {}
-        except Exception as e:
-            logger.error(f"Error getting index mapping: {e}")
-            return None
-
-    def get_index_settings(self) -> dict[str, Any] | None:
-        """Get index settings (alias for get_settings for compatibility).
-
-        :returns: Dictionary with index settings or None if error
-        :rtype: Optional[Dict[str, Any]]
-        """
-        try:
-            settings = self.client.indices.get_settings(index=self.index_name)
-            # Extract just the settings for this index
-            if settings and self.index_name in settings:
-                index_settings: dict[str, Any] = settings[self.index_name].get("settings", {})
-                return index_settings
-            return {}
-        except Exception as e:
-            logger.error(f"Error getting index settings: {e}")
-            return None

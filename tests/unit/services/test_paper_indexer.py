@@ -5,9 +5,7 @@ with Jina AI faked at its HTTP edge. Time is virtual, so waiting for Jina takes 
 
 import asyncio
 import re
-import socket
 from datetime import datetime
-from functools import partial
 from itertools import pairwise
 from typing import Any
 
@@ -18,14 +16,11 @@ from src.config import Settings
 from src.db.interfaces.base import BaseDatabase
 from src.exceptions import OpenSearchException, PapersNotIndexed
 from src.models.paper import Paper
-from src.repositories.paper import PaperRepository
-from src.schemas.arxiv.paper import PaperCreate
-from src.services import paper_indexer
-from src.services.embeddings.factory import make_embeddings_service
 from src.services.opensearch.index_config_hybrid import arxiv_papers_chunks_mapping
 from src.services.paper_indexer import make_paper_indexer
 
 from tests.fake_jina import Failure, FakeJina, own_vector
+from tests.papers import chunk_index, content, hold, paper, words
 from tests.unit.services.virtual_time import VirtualTimePolicy
 
 # A Category OpenSearch rejects, as the mapping makes Categories keywords, and Lucene holds no term over 32766 bytes.
@@ -34,43 +29,6 @@ CATEGORY_TOO_LONG_FOR_A_KEYWORD = "cs." + "A" * 32766
 SECTION_TITLE_TOO_LONG_FOR_A_KEYWORD = "Results " + "A" * 32766
 # A meaning a test makes Jina embed a text as: a unit vector of jina-embeddings-v3's 1024 dimensions, as Jina's are.
 A_MEANING = own_vector("a meaning", 1024)
-
-
-def words(count: int, *, about: str) -> str:
-    """A text of so many words, each its topic followed by its position, so that no other text in a test shares them."""
-    return " ".join(f"{about}{position}" for position in range(count))
-
-
-def content(*sections: tuple[str, str]) -> dict[str, Any]:
-    """A Paper's Content as the Ingestion stores it when Docling parses its PDF into these sections, each a title and text."""
-    return {
-        "raw_text": "\n\n".join(f"{title}\n\n{text}" for title, text in sections),
-        "sections": [{"title": title, "content": text} for title, text in sections],
-        "pdf_processed": True,
-    }
-
-
-def paper(arxiv_id: str, *, version: int = 1, **fields: Any) -> PaperCreate:
-    """A Paper as the Ingestion stores it, held at its Version, without Content unless the test gives it."""
-    metadata: dict[str, Any] = {
-        "arxiv_id": arxiv_id,
-        "version": version,
-        "title": f"The title of {arxiv_id}",
-        "authors": ["Ada Lovelace", "Charles Babbage"],
-        "abstract": f"The abstract of {arxiv_id}.",
-        "categories": ["cs.AI"],
-        "published_date": datetime(2024, 11, 1, 9, 30),
-        "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}v{version}",
-    }
-    return PaperCreate(**{**metadata, **fields})
-
-
-def hold(database: BaseDatabase, *papers: PaperCreate) -> None:
-    """Store the Papers as the Ingestion does."""
-    with database.get_session() as session:
-        repository = PaperRepository(session)
-        for held in papers:
-            repository.upsert(held)
 
 
 def created_long_before(database: BaseDatabase, arxiv_id: str) -> None:
@@ -90,10 +48,9 @@ async def index(database: BaseDatabase, arxiv_ids: list[str]) -> dict[str, int]:
     return await make_paper_indexer(database, Settings()).index_papers(arxiv_ids)
 
 
-def chunk_index() -> str:
-    """The chunk index: the index name followed by the chunk index's suffix, arxiv-papers-chunks by default."""
-    settings = Settings().opensearch
-    return f"{settings.index_name}-{settings.chunk_index_suffix}"
+def week3_index() -> str:
+    """The Week 3 index, which held each Paper whole: the index name alone, arxiv-papers by default."""
+    return Settings().opensearch.index_name
 
 
 def chunks(opensearch: OpenSearch, arxiv_id: str) -> list[dict[str, Any]]:
@@ -120,25 +77,6 @@ def create_chunk_index(opensearch: OpenSearch) -> None:
 def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
     """pytest-asyncio runs each test of this module on a VirtualTimeLoop."""
     return VirtualTimePolicy()
-
-
-@pytest.fixture(autouse=True)
-def indexing_reaching_the_fake_jina(jina: FakeJina, monkeypatch: pytest.MonkeyPatch) -> None:
-    """
-    The indexing module builds its Jina client with the factory, which takes the transport the client reaches Jina
-    through. In every indexing test, it passes the fake Jina's, so that no indexing test reaches the real Jina.
-    """
-    monkeypatch.setattr(paper_indexer, "make_embeddings_service", partial(make_embeddings_service, transport=jina.transport))
-
-
-@pytest.fixture
-def opensearch_down(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The settings point at a port nothing listens on, as if OpenSearch were down."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        host, port = probe.getsockname()
-    # Free again, so that the port refuses every connection at once. On macOS, a port still bound times connections out.
-    monkeypatch.setenv("OPENSEARCH__HOST", f"http://{host}:{port}")
 
 
 async def test_each_chunk_made_from_a_papers_sections_begins_with_its_title_and_abstract(
@@ -215,6 +153,19 @@ async def test_a_rebuild_replaces_an_index_created_with_a_different_mapping_by_o
         "space_type": "cosinesimil",
         "parameters": {"m": 16, "ef_construction": 512},
     }
+
+
+async def test_a_rebuild_deletes_the_week_3_index_and_indexes_every_paper_into_the_chunk_index(
+    database: BaseDatabase, opensearch: OpenSearch
+) -> None:
+    # As Week 3's indexing left it, holding a Paper whole.
+    opensearch.index(index=week3_index(), body={"arxiv_id": "2411.00001", "title": "The title of 2411.00001"}, refresh=True)
+    hold(database, paper("2411.00001"))
+
+    await rebuild(database)
+
+    assert not opensearch.indices.exists(index=week3_index())
+    assert indexed_papers(opensearch) == ["2411.00001"]
 
 
 async def test_a_rebuild_creates_the_chunk_index_with_vectors_of_the_dimension_and_space_type_the_settings_give(

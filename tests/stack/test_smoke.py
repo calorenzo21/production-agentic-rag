@@ -81,6 +81,18 @@ def test_the_api_reports_the_chunk_index_and_its_chunks() -> None:
     assert response.json()["services"]["opensearch"]["message"] == f"Index '{chunk_index}' with {held} documents"
 
 
+def test_a_real_search_answers_with_papers_rag_db_holds() -> None:
+    response = httpx.post("http://localhost:8000/api/v1/hybrid-search/", json={"query": "language models"}, timeout=10)
+
+    # The API reaches OpenSearch over TLS as rag_app, and OpenSearch takes its query over the chunk index's mapping.
+    assert response.status_code == 200, response.text
+    found = response.json()
+    # By words alone, as nothing embeds a query yet.
+    assert found["search_mode"] == "bm25"
+    held = set(superuser_sql("rag_db", "SELECT arxiv_id FROM papers").splitlines())
+    assert {hit["arxiv_id"] for hit in found["hits"]} <= held
+
+
 def test_the_api_lists_the_papers_rag_db_holds() -> None:
     response = httpx.get("http://localhost:8000/api/v1/papers/", params={"limit": 100}, timeout=10)
 
