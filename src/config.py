@@ -58,6 +58,18 @@ class PDFParserSettings(DefaultSettings):
     do_table_structure: bool = True
 
 
+class ChunkingSettings(DefaultSettings):
+    """Text chunking settings."""
+
+    # Without its prefix, it would also read unprefixed variables such as CHUNK_SIZE.
+    model_config = SettingsConfigDict(env_prefix="CHUNKING__")
+
+    chunk_size: int = 600  # Target words per chunk
+    overlap_size: int = 100  # Words to overlap between chunks
+    min_chunk_size: int = 100  # Minimum words for a valid chunk
+    section_based: bool = True  # Use section-based chunking when available
+
+
 class OpenSearchSettings(DefaultSettings):
     """OpenSearch client settings."""
 
@@ -66,7 +78,18 @@ class OpenSearchSettings(DefaultSettings):
 
     host: str = "https://localhost:9200"
     index_name: str = "arxiv-papers"
-    max_text_size: int = 1000000
+    chunk_index_suffix: str = "chunks"  # The chunk index is the index name followed by it: arxiv-papers-chunks
+
+    # Vector search settings. The course never reads them, as its chunk index's mapping hard-codes both (README.md).
+    vector_dimension: int = 1024  # Jina embeddings dimension
+    vector_space_type: str = "cosinesimil"  # cosinesimil, l2, innerproduct
+
+    # Hybrid search settings. The course never reads the pipeline's name, which its code hard-codes too (README.md).
+    rrf_pipeline_name: str = "hybrid-rrf-pipeline"
+    # How many Chunks each half of a Search by words and meaning keeps, on every page: this many times the largest page.
+    # The course never reads it (README.md).
+    hybrid_search_size_multiplier: int = 2
+
     # The course's OpenSearch needs neither TLS nor a login. This one requires both, as the rag_app user.
     username: str = "rag_app"
     password: str = ""
@@ -92,11 +115,17 @@ class Settings(DefaultSettings):
     ollama_model: str = "llama3.2:1b"
     ollama_timeout: int = 300  # 5 minutes for LLM operations
 
+    # Jina AI embeddings configuration. make setup cannot generate the key: the maintainer pastes it into .env.
+    jina_api_key: str = ""
+
     # arXiv settings
     arxiv: ArxivSettings = Field(default_factory=ArxivSettings)
 
     # PDF parser settings
     pdf_parser: PDFParserSettings = Field(default_factory=PDFParserSettings)
+
+    # Text chunking settings
+    chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
 
     # OpenSearch settings
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)

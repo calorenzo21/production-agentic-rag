@@ -70,13 +70,37 @@ def test_the_api_reaches_the_database_opensearch_and_native_ollama() -> None:
     assert body["services"]["ollama"]["status"] == "healthy"
 
 
-def test_the_api_reports_the_size_of_the_index() -> None:
-    index_name = settings_in("api", "OPENSEARCH__")["OPENSEARCH__INDEX_NAME"]
-    held = httpx.get(f"{OPENSEARCH_URL}/{index_name}/_count", auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY).json()["count"]
+def test_the_api_reports_the_papers_and_chunks_the_index_holds() -> None:
+    opensearch = settings_in("api", "OPENSEARCH__")
+    chunk_index = f"{opensearch['OPENSEARCH__INDEX_NAME']}-{opensearch['OPENSEARCH__CHUNK_INDEX_SUFFIX']}"
+    # Exact below its precision threshold, 40,000 at most, which the Papers the stack holds stay far below. The health
+    # check counts them exactly however many there are.
+    distinct_arxiv_ids = {"papers": {"cardinality": {"field": "arxiv_id", "precision_threshold": 40_000}}}
+    with httpx.Client(base_url=OPENSEARCH_URL, auth=APP_LOGIN, verify=CERTIFICATE_AUTHORITY) as client:
+        chunk_count = client.get(f"/{chunk_index}/_count").json()["count"]
+        search = client.post(f"/{chunk_index}/_search", json={"size": 0, "aggs": distinct_arxiv_ids})
+    paper_count = search.json()["aggregations"]["papers"]["value"]
 
     response = httpx.get("http://localhost:8000/api/v1/health", timeout=10)
 
-    assert response.json()["services"]["opensearch"]["message"] == f"Index '{index_name}' with {held} documents"
+    # Each of the chunk index's documents is a Chunk, and each distinct arXiv ID its Chunks hold a Paper.
+    assert response.json()["services"]["opensearch"] == {
+        "status": "healthy",
+        "message": f"Index '{chunk_index}' with {paper_count} Papers and {chunk_count} Chunks",
+    }
+
+
+def test_a_real_search_answers_by_words_and_meaning_with_papers_rag_db_holds() -> None:
+    response = httpx.post("http://localhost:8000/api/v1/hybrid-search/", json={"query": "language models"}, timeout=10)
+
+    # The API reaches OpenSearch over TLS as rag_app, and OpenSearch takes its query over the chunk index's mapping.
+    assert response.status_code == 200, response.text
+    found = response.json()
+    # Not by words alone, which the API falls back to when Jina fails, so the API's Jina key embedded the query, and
+    # OpenSearch fused the two halves with the RRF pipeline, which the API created as rag_app.
+    assert found["search_mode"] == "hybrid"
+    held = set(superuser_sql("rag_db", "SELECT arxiv_id FROM papers").splitlines())
+    assert {hit["arxiv_id"] for hit in found["hits"]} <= held
 
 
 def test_the_api_lists_the_papers_rag_db_holds() -> None:
@@ -155,7 +179,7 @@ def locked_version(package: str) -> str | None:
     return next((entry["version"] for entry in lock["package"] if entry["name"] == package), None)
 
 
-@pytest.mark.parametrize("package", ["docling", "opensearch-py"])
+@pytest.mark.parametrize("package", ["docling", "opensearch-py", "httpx"])
 def test_airflow_runs_the_locked_version_of(package: str) -> None:
     version = installed_version("airflow", package)
 
@@ -217,6 +241,42 @@ def test_the_api_and_airflow_alone_receive_the_opensearch_settings() -> None:
     for name, service in services().items():
         received = {variable for variable in environment(service["ID"]) if variable.startswith("OPENSEARCH__")}
         assert received == (expected if name in {"api", "airflow"} else set()), name
+
+
+# The indexing's settings that hold no secret: the chunker's, and the chunk index's and its vectors'.
+INDEXING_SETTINGS = (
+    "CHUNKING__",
+    "OPENSEARCH__CHUNK_INDEX_SUFFIX",
+    "OPENSEARCH__VECTOR_DIMENSION",
+    "OPENSEARCH__VECTOR_SPACE_TYPE",
+)
+
+
+def test_the_api_and_airflow_alone_receive_the_indexing_settings_from_env() -> None:
+    # A setting missing or empty in .env takes compose.yml's default, which is the value .env.example gives it.
+    example = dotenv_values(REPOSITORY / ".env.example")
+    expected = {name: ENV.get(name) or value for name, value in example.items() if name.startswith(INDEXING_SETTINGS)}
+
+    assert len(expected) == 7
+    for name, service in services().items():
+        received = {
+            variable: value for variable, value in environment(service["ID"]).items() if variable.startswith(INDEXING_SETTINGS)
+        }
+        # Both run the indexing: Airflow each day, and the API's container for make reindex.
+        assert received == (expected if name in {"api", "airflow"} else {}), name
+
+
+def test_the_api_and_airflow_alone_receive_the_jina_key_from_env() -> None:
+    key = ENV.get("JINA_API_KEY")
+    paste_your_key = "make setup cannot generate the Jina AI key: paste yours into .env"
+    assert key, paste_your_key
+    assert key != dotenv_values(REPOSITORY / ".env.example")["JINA_API_KEY"], paste_your_key
+    environments = {name: environment(service["ID"]) for name, service in services().items()}
+
+    # Service names only, as the key is a secret, which a failed assertion on it would print.
+    receiving_a_key = {name for name, variables in environments.items() if "JINA_API_KEY" in variables}
+    receiving_the_key = {name for name, variables in environments.items() if variables.get("JINA_API_KEY") == key}
+    assert receiving_a_key == receiving_the_key == {"api", "airflow"}
 
 
 def test_no_container_receives_the_former_flat_opensearch_settings() -> None:

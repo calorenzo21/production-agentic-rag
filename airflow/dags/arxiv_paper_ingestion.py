@@ -3,15 +3,13 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, CronTriggerTimetable, TriggerRule
 
-# Import task functions from separate module
-from arxiv_ingestion.tasks import (
-    cleanup_temp_files,
-    fail_the_run,
-    fetch_daily_papers,
-    generate_daily_report,
-    index_papers_to_opensearch,
-    setup_environment,
-)
+# Import task functions from modular structure
+from arxiv_ingestion.cleanup import cleanup_temp_files
+from arxiv_ingestion.fetching import fetch_daily_papers
+from arxiv_ingestion.indexing import index_papers_hybrid
+from arxiv_ingestion.reporting import generate_daily_report
+from arxiv_ingestion.setup import setup_environment
+from arxiv_ingestion.watcher import fail_the_run
 
 # Default DAG arguments
 default_args = {
@@ -29,7 +27,7 @@ default_args = {
 dag = DAG(
     "arxiv_paper_ingestion",
     default_args=default_args,
-    description="Daily arXiv CS.AI paper pipeline: fetch → store to PostgreSQL → index to OpenSearch",
+    description="Daily arXiv CS.AI paper pipeline: fetch → store to PostgreSQL → chunk & embed → hybrid OpenSearch indexing",
     # Every day at 6 AM UTC, weekends included. A trigger timetable makes a run's logical date the day it runs,
     # and each run ingests the day four days before, the most recent day arXiv has always finished announcing (see
     # ANNOUNCEMENT_LAG). Missed days are recovered with `airflow backfill create`, whose run of a day also ingests
@@ -37,7 +35,7 @@ dag = DAG(
     schedule=CronTriggerTimetable("0 6 * * *", timezone="UTC"),
     max_active_runs=1,
     catchup=False,
-    tags=["arxiv", "papers", "ingestion", "opensearch", "week3"],
+    tags=["arxiv", "papers", "ingestion", "hybrid-search", "embeddings", "chunks"],
 )
 
 # Task definitions
@@ -53,11 +51,11 @@ fetch_task = PythonOperator(
     dag=dag,
 )
 
-# Indexes the Papers fetch_task stored, by the arXiv IDs it passes on through XCom. It fails when the indexing does, so
-# that Airflow retries it, twice and 30 minutes apart.
-opensearch_task = PythonOperator(
-    task_id="index_papers_to_opensearch",
-    python_callable=index_papers_to_opensearch,
+# Indexes the Papers fetch_task stored as Chunks with their embeddings, by the arXiv IDs it passes on through XCom. It fails
+# when the indexing does, so that Airflow retries it, twice and 30 minutes apart.
+index_hybrid_task = PythonOperator(
+    task_id="index_papers_hybrid",
+    python_callable=index_papers_hybrid,
     dag=dag,
 )
 
@@ -91,6 +89,6 @@ watcher_task = PythonOperator(
 )
 
 # Task dependencies
-# Main pipeline: setup -> fetch -> opensearch -> report -> cleanup, and the watcher after every task
-setup_task >> fetch_task >> opensearch_task >> report_task >> cleanup_task
-[setup_task, fetch_task, opensearch_task, report_task, cleanup_task] >> watcher_task
+# Main pipeline: setup -> fetch -> hybrid index -> report -> cleanup, and the watcher after every task
+setup_task >> fetch_task >> index_hybrid_task >> report_task >> cleanup_task
+[setup_task, fetch_task, index_hybrid_task, report_task, cleanup_task] >> watcher_task

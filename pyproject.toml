@@ -15,7 +15,8 @@ dependencies = [
     # Airflow's constraints decide this version, as Airflow runs this code too (ADR 0003).
     "opensearch-py==3.2.0",
     "requests>=2.32.3",
-    "httpx>=0.28.1",
+    # Airflow's constraints decide this version, as Airflow runs this code too (ADR 0003).
+    "httpx==0.28.1",
     "defusedxml>=0.7.1",
     "python-dateutil>=2.9.0.post0",
 ]

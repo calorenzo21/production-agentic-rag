@@ -3,12 +3,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The aggregation that counts the Papers a Search by words alone matches, when it returns one Chunk per Paper.
+PAPERS_MATCHING = "papers_matching"
 
-class PaperQueryBuilder:
+
+class QueryBuilder:
     """
-    Query builder for arXiv papers search following reference patterns.
+    Query builder for the BM25 Search of the Chunks the Index holds.
 
-    Builds complex OpenSearch queries with proper scoring, filtering, and highlighting.
+    Builds complex OpenSearch queries with proper scoring, filtering, and highlighting. The course's also builds Week 3's
+    query of whole Papers, for the index Week 4 replaces, which nothing calls (README.md).
     """
 
     def __init__(
@@ -20,25 +24,36 @@ class PaperQueryBuilder:
         categories: list[str] | None = None,
         track_total_hits: bool = True,
         latest_papers: bool = False,
+        one_per_paper: bool = False,
+        min_score: float = 0.0,
     ):
         """Initialize query builder.
 
         :param query: Search query text
         :param size: Number of results to return
         :param from_: Offset for pagination
-        :param fields: Fields to search in
+        :param fields: Fields to search in (if None, the Chunk's text, the title, the abstract and the authors)
         :param categories: Filter by categories
         :param track_total_hits: Whether to track total hits accurately
         :param latest_papers: Sort by publication date instead of relevance
+        :param one_per_paper: Return only the best Chunk of each Paper, and count the Papers, which the course does not
+            (README.md)
+        :param min_score: Leave out the Chunks whose BM25 score is below it, which the course does not (README.md)
         """
         self.query = query
         self.size = size
         self.from_ = from_
-        # Multi-field search with boosting: title (highest), abstract (medium), authors (lower)
-        self.fields = fields or ["title^3", "abstract^2", "authors^1"]
         self.categories = categories
         self.track_total_hits = track_total_hits
         self.latest_papers = latest_papers
+        self.one_per_paper = one_per_paper
+        self.min_score = min_score
+
+        if fields is None:
+            # The course's leaves out the authors, which Week 3's searched, with this weight (README.md).
+            self.fields = ["chunk_text^3", "title^2", "abstract^1", "authors^1"]
+        else:
+            self.fields = fields
 
     def build(self) -> dict[str, Any]:
         """Build the complete OpenSearch query.
@@ -54,10 +69,17 @@ class PaperQueryBuilder:
             "highlight": self._build_highlight(),
         }
 
-        # Add sorting if needed
         sort = self._build_sort()
         if sort:
             query_body["sort"] = sort
+
+        if self.one_per_paper:
+            # Of each Paper's Chunks, the first in the order sorted, so the best, as all of a Paper's Chunks share its
+            # publication date. OpenSearch pages over them, and counts the distinct arXiv IDs, as the hits' total counts
+            # Chunks. Above its precision threshold, 3,000 by default, it counts them only approximately, so the count
+            # would drift as the Papers held grow: 40,000 is the highest threshold it takes.
+            query_body["collapse"] = {"field": "arxiv_id"}
+            query_body["aggs"] = {PAPERS_MATCHING: {"cardinality": {"field": "arxiv_id", "precision_threshold": 40_000}}}
 
         return query_body
 
@@ -66,27 +88,27 @@ class PaperQueryBuilder:
 
         :returns: Query dictionary with bool structure
         """
-        # Build must clauses
         must_clauses = []
 
-        # Main text search
         if self.query.strip():
             must_clauses.append(self._build_text_query())
 
-        # Build filter clauses
         filter_clauses = self._build_filters()
 
-        # Construct bool query
         bool_query = {}
 
         if must_clauses:
             bool_query["must"] = must_clauses
         else:
-            # If no text query, match all documents
             bool_query["must"] = [{"match_all": {}}]
 
         if filter_clauses:
             bool_query["filter"] = filter_clauses
+
+        if self.min_score:
+            # Its own min_score leaves the Chunks below it out of the query, and so out of the count of Papers too. A
+            # search's min_score leaves them out of the hits only, in OpenSearch 2.19, so the count would still hold them.
+            return {"function_score": {"query": {"bool": bool_query}, "min_score": self.min_score}}
 
         return {"bool": bool_query}
 
@@ -113,18 +135,17 @@ class PaperQueryBuilder:
         """
         filters = []
 
-        # Category filter
         if self.categories:
             filters.append({"terms": {"categories": self.categories}})
 
         return filters
 
-    def _build_source_fields(self) -> list[str]:
-        """Define which fields to return in results.
+    def _build_source_fields(self) -> dict[str, list[str]]:
+        """Define which fields to return in results: all of a Chunk's but its embedding.
 
-        :returns: List of field names to include in response
+        :returns: Source field configuration
         """
-        return ["arxiv_id", "title", "authors", "abstract", "categories", "published_date", "pdf_url"]
+        return {"excludes": ["embedding"]}
 
     def _build_highlight(self) -> dict[str, Any]:
         """Build highlighting configuration.
@@ -133,14 +154,16 @@ class PaperQueryBuilder:
         """
         return {
             "fields": {
-                "title": {
-                    "fragment_size": 0,  # Return entire field
-                    "number_of_fragments": 0,
+                "chunk_text": {
+                    "fragment_size": 150,
+                    "number_of_fragments": 2,
+                    "pre_tags": ["<mark>"],
+                    "post_tags": ["</mark>"],
                 },
-                "abstract": {"fragment_size": 150, "number_of_fragments": 3, "pre_tags": ["<mark>"], "post_tags": ["</mark>"]},
-                "authors": {
-                    "fragment_size": 0,  # Return entire field
-                    "number_of_fragments": 0,
+                "title": {"fragment_size": 0, "number_of_fragments": 0, "pre_tags": ["<mark>"], "post_tags": ["</mark>"]},
+                "abstract": {
+                    "fragment_size": 150,
+                    "number_of_fragments": 1,
                     "pre_tags": ["<mark>"],
                     "post_tags": ["</mark>"],
                 },
@@ -153,31 +176,10 @@ class PaperQueryBuilder:
 
         :returns: Sort configuration or None for relevance scoring
         """
-        # If latest_papers is requested, always sort by publication date
         if self.latest_papers:
             return [{"published_date": {"order": "desc"}}, "_score"]
 
-        # For text queries, use relevance scoring (no explicit sort)
         if self.query.strip():
             return None
 
-        # For empty queries, sort by publication date (newest first)
         return [{"published_date": {"order": "desc"}}, "_score"]
-
-
-def build_search_query(
-    query: str,
-    size: int = 10,
-    from_: int = 0,
-    categories: list[str] | None = None,
-) -> dict[str, Any]:
-    """Helper function to build a search query with optional filters.
-
-    :param query: Search query text
-    :param size: Number of results
-    :param from_: Offset for pagination
-    :param categories: Optional filter by categories
-    :returns: Search query dictionary
-    """
-    builder = PaperQueryBuilder(query=query, size=size, from_=from_, categories=categories)
-    return builder.build()

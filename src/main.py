@@ -7,7 +7,8 @@ import uvicorn
 from fastapi import FastAPI
 from src.config import get_settings
 from src.db.factory import make_database
-from src.routers import papers, ping, search
+from src.routers import hybrid_search, papers, ping
+from src.services.embeddings.factory import make_embeddings_service
 from src.services.opensearch.factory import make_opensearch_client
 
 # Setup logging
@@ -40,11 +41,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if opensearch_client.health_check():
         logger.info("OpenSearch connected successfully")
 
-        # Ensure index exists
-        if opensearch_client.create_index(force=False):
-            logger.info("OpenSearch index created")
+        # Setup hybrid index (supports all search types)
+        setup_results = opensearch_client.setup_indices(force=False)
+        if setup_results.get("hybrid_index"):
+            logger.info("Hybrid index created")
         else:
-            logger.info("OpenSearch index already exists")
+            logger.info("Hybrid index already exists")
 
         # Get index statistics
         stats = opensearch_client.get_index_stats()
@@ -53,12 +55,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("OpenSearch connection failed - search features will be limited")
 
     # Unlike the course, the API builds neither the arXiv client nor the PDF parser: no endpoint downloads or parses
-    # PDFs, and the API image has no Docling.
+    # PDFs, and the API image has no Docling. Of the course's other services, it builds only the Jina client.
+    embeddings_service = make_embeddings_service()
+    app.state.embeddings_service = embeddings_service
 
     logger.info("API ready")
     yield
 
-    # Cleanup
+    # Cleanup. The course never closes the Jina client (README.md).
+    await embeddings_service.close()
     database.teardown()
     logger.info("API shutdown complete")
 
@@ -73,7 +78,7 @@ app = FastAPI(
 # Include routers
 app.include_router(ping.router, prefix="/api/v1")
 app.include_router(papers.router, prefix="/api/v1")
-app.include_router(search.router, prefix="/api/v1")
+app.include_router(hybrid_search.router, prefix="/api/v1")  # Hybrid search supporting all modes
 
 
 if __name__ == "__main__":

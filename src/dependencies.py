@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 from src.config import Settings, get_settings
 from src.db.interfaces.base import BaseDatabase
+from src.services.embeddings.jina_client import JinaEmbeddingsClient
 from src.services.opensearch.client import OpenSearchClient
 
 
@@ -26,8 +27,15 @@ def get_opensearch_client(request: Request) -> OpenSearchClient:
     return opensearch_client
 
 
+def get_embeddings_service(request: Request) -> JinaEmbeddingsClient:
+    """Get embeddings service from the request state."""
+    embeddings_service: JinaEmbeddingsClient = request.app.state.embeddings_service
+    return embeddings_service
+
+
 # Dependency annotations
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 DatabaseDep = Annotated[BaseDatabase, Depends(get_database)]
 SessionDep = Annotated[Session, Depends(get_db_session)]
 OpenSearchDep = Annotated[OpenSearchClient, Depends(get_opensearch_client)]
+EmbeddingsDep = Annotated[JinaEmbeddingsClient, Depends(get_embeddings_service)]
