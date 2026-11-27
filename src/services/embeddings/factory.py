@@ -23,4 +23,4 @@ def make_embeddings_service(
     # Get API key from settings
     api_key = settings.jina_api_key
 
-    return JinaEmbeddingsClient(api_key=api_key, transport=transport)
+    return JinaEmbeddingsClient(api_key=api_key, transport=transport, dimensions=settings.opensearch.vector_dimension)

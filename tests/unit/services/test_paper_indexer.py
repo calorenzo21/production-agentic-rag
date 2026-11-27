@@ -309,6 +309,17 @@ async def test_a_rebuild_creates_the_chunk_index_with_vectors_of_the_dimension_a
     assert (embedding["dimension"], embedding["method"]["space_type"]) == (8, "l2")
 
 
+async def test_a_rebuild_embeds_each_chunk_as_a_vector_of_the_dimension_the_settings_give(
+    database: BaseDatabase, opensearch: OpenSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENSEARCH__VECTOR_DIMENSION", "8")
+    hold(database, paper("2411.00001"))
+
+    await rebuild(database)
+
+    assert [len(chunk["embedding"]) for chunk in chunks(opensearch, "2411.00001")] == [8]
+
+
 async def test_a_rebuild_that_cannot_recreate_the_chunk_index_fails_without_indexing_a_paper(
     database: BaseDatabase, opensearch: OpenSearch
 ) -> None:

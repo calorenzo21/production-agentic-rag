@@ -20,21 +20,28 @@ LONGEST_WAIT_SECONDS = 60.0
 class JinaEmbeddingsClient:
     """Client for Jina AI embeddings API.
 
-    Uses Jina embeddings v3 model with 1024 dimensions optimized for retrieval.
+    Uses Jina embeddings v3 model optimized for retrieval, with vectors of the dimensions it is given, 1024 by default.
     Documentation: https://jina.ai/embeddings
     """
 
     def __init__(
-        self, api_key: str, base_url: str = "https://api.jina.ai/v1", transport: httpx.AsyncBaseTransport | None = None
+        self,
+        api_key: str,
+        base_url: str = "https://api.jina.ai/v1",
+        transport: httpx.AsyncBaseTransport | None = None,
+        dimensions: int = 1024,
     ) -> None:
         """Initialize Jina embeddings client.
 
         :param api_key: Jina API key
         :param base_url: API base URL
         :param transport: None sends requests over the network. Tests pass a transport that fakes Jina.
+        :param dimensions: The dimensions of each vector, those of the chunk index's vectors
         """
         self.api_key = api_key
         self.base_url = base_url
+        # The course always asks for 1024, so a chunk index of any other dimension rejects every Chunk (README.md).
+        self.dimensions = dimensions
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -59,7 +66,7 @@ class JinaEmbeddingsClient:
             batch = texts[i : i + batch_size]
 
             request_data = JinaEmbeddingRequest(
-                model="jina-embeddings-v3", task="retrieval.passage", dimensions=1024, input=batch
+                model="jina-embeddings-v3", task="retrieval.passage", dimensions=self.dimensions, input=batch
             )
 
             try:
@@ -111,7 +118,9 @@ class JinaEmbeddingsClient:
         :param query: Query text to embed
         :returns: Embedding vector for the query
         """
-        request_data = JinaEmbeddingRequest(model="jina-embeddings-v3", task="retrieval.query", dimensions=1024, input=[query])
+        request_data = JinaEmbeddingRequest(
+            model="jina-embeddings-v3", task="retrieval.query", dimensions=self.dimensions, input=[query]
+        )
 
         try:
             response = await self.client.post(f"{self.base_url}/embeddings", headers=self.headers, json=request_data.model_dump())
