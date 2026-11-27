@@ -363,3 +363,9 @@ async def test_the_api_answers_another_request_while_a_search_waits_for_an_opens
         assert (ping.status_code, search.done()) == (200, False)
     # OpenSearch then drops the Search's connection, so that the Search answers, and ends with the test.
     await search
+
+
+async def test_the_week_3_search_endpoint_answers_404(client: AsyncClient) -> None:
+    response = await client.post("/api/v1/search/", json={"query": "attention"})
+
+    assert response.status_code == 404
