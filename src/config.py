@@ -37,8 +37,8 @@ class ArxivSettings(DefaultSettings):
     pdf_cache_dir: str = "./data/arxiv_pdfs"
     rate_limit_delay: float = 3.0  # seconds between requests
     timeout_seconds: int = 30
-    # The course's Week 3 lowers it to 15. README.md records keeping 100 as a Deviation.
-    max_results: int = 100
+    # The course's Week 3 lowers it to 15. README.md records 5, to spend few Jina tokens, as a Deviation.
+    max_results: int = 5
     search_category: str = "cs.AI"  # Default category to search
     download_max_retries: int = 3  # attempts at each PDF download, the first one included
     download_retry_delay_base: float = 5.0  # the nth retry waits n times this many seconds
