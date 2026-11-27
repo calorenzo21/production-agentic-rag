@@ -4,6 +4,7 @@ edge. The Papers it finds are stored as the Ingestion stores them, then indexed 
 indexes them.
 """
 
+import asyncio
 from collections.abc import Callable, Iterator
 from datetime import datetime
 
@@ -14,10 +15,12 @@ from src.config import get_settings
 from src.db.interfaces.base import BaseDatabase
 from src.services.opensearch.factory import make_opensearch_client
 
+from tests.api.hanging_opensearch import HangingOpenSearch
 from tests.fake_jina import Failure, FakeJina, halfway, own_vector
 from tests.papers import chunk_index, content, hold_and_index, paper, words
 
 SEARCH = "/api/v1/hybrid-search/"
+PING = "/api/v1/ping"
 # What the API answers when OpenSearch fails a Search, whatever the failure, so that its text never reaches the caller.
 UNAVAILABLE = {"detail": "Search service is currently unavailable"}
 # A meaning a test makes Jina embed a text as: a unit vector of jina-embeddings-v3's 1024 dimensions, as Jina's are.
@@ -345,3 +348,18 @@ async def test_a_search_answers_503_without_the_exceptions_text_when_opensearch_
     response = await client.post(SEARCH, json={"query": "attention"})
 
     assert (response.status_code, response.json()) == (503, UNAVAILABLE)
+
+
+async def test_the_api_answers_another_request_while_a_search_waits_for_an_opensearch_that_does_not_answer(
+    hanging_opensearch: HangingOpenSearch, client: AsyncClient
+) -> None:
+    async with hanging_opensearch.hanging() as asked:
+        search = asyncio.create_task(client.post(SEARCH, json={"query": "attention"}))
+        # Well before opensearch-py's timeout, 10 seconds, which a Search that stalls the API would wait out first.
+        async with asyncio.timeout(5):
+            await asked.wait()
+            ping = await client.get(PING)
+
+        assert (ping.status_code, search.done()) == (200, False)
+    # OpenSearch then drops the Search's connection, so that the Search answers, and ends with the test.
+    await search

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -34,7 +35,10 @@ async def hybrid_search(
 
         logger.info(f"Hybrid search: '{request.query}' (hybrid: {request.use_hybrid and query_embedding is not None})")
 
-        results = opensearch_client.search_unified(
+        # Unlike the course's, in a worker thread, so that while the Search waits for OpenSearch, the worker's other requests
+        # do not wait with it (README.md).
+        results = await asyncio.to_thread(
+            opensearch_client.search_unified,
             query=request.query,
             query_embedding=query_embedding,
             size=request.size,
