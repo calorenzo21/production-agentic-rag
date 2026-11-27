@@ -157,6 +157,16 @@ class OpenSearchClient:
         except TransportError as e:
             raise OpenSearchException(str(e)) from e
 
+    def rrf_pipeline_exists(self) -> bool:
+        """
+        Whether the RRF search pipeline named by OPENSEARCH__RRF_PIPELINE_NAME exists. Like index_exists, it raises
+        OpenSearchException when it cannot tell, so that an OpenSearch that is down is not taken for a missing pipeline.
+        """
+        try:
+            return self._search_pipeline_exists(self.settings.opensearch.rrf_pipeline_name)
+        except TransportError as e:
+            raise OpenSearchException(str(e)) from e
+
     def delete_week3_index(self) -> None:
         """
         Delete the Week 3 index, which held each Paper whole, and is named the index name alone, if it is still there. The

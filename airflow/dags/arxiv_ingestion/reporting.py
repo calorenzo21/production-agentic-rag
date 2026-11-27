@@ -20,10 +20,10 @@ def generate_daily_report(**context):
     try:
         fetch_results = context["task_instance"].xcom_pull(task_ids="fetch_daily_papers", key="fetch_results")
 
-        opensearch_results = context["task_instance"].xcom_pull(task_ids="index_papers_to_opensearch")
+        opensearch_results = context["task_instance"].xcom_pull(task_ids="index_papers_hybrid")
         if not opensearch_results:
             # The report runs once the indexing has succeeded or failed. A failed indexing returns nothing, but records it.
-            opensearch_results = context["task_instance"].xcom_pull(task_ids="index_papers_to_opensearch", key="indexing_failure")
+            opensearch_results = context["task_instance"].xcom_pull(task_ids="index_papers_hybrid", key="indexing_failure")
 
         dag_run = context["dag_run"]
 
@@ -44,6 +44,8 @@ def generate_daily_report(**context):
             "opensearch": {
                 "papers_indexed": opensearch_results.get("papers_indexed", 0) if opensearch_results else 0,
                 "indexing_failures": opensearch_results.get("indexing_failures", 0) if opensearch_results else 0,
+                "chunks_indexed": opensearch_results.get("chunks_indexed", 0) if opensearch_results else 0,
+                "embeddings_indexed": opensearch_results.get("embeddings_indexed", 0) if opensearch_results else 0,
                 "total_documents_in_index": opensearch_results.get("total_documents_in_index", 0) if opensearch_results else 0,
                 "status": opensearch_results.get("status", "unknown") if opensearch_results else "unknown",
             },
@@ -59,6 +61,8 @@ def generate_daily_report(**context):
         logger.info(f"PDF failures (oversized docs skipped): {report['processing']['pdf_failures_skipped']}")
         logger.info(f"OpenSearch indexed: {report['opensearch']['papers_indexed']}")
         logger.info(f"OpenSearch failures: {report['opensearch']['indexing_failures']}")
+        logger.info(f"Chunks indexed: {report['opensearch']['chunks_indexed']}")
+        logger.info(f"Embeddings indexed: {report['opensearch']['embeddings_indexed']}")
         logger.info(f"Total in index: {report['opensearch']['total_documents_in_index']}")
         logger.info(f"OpenSearch status: {report['opensearch']['status']}")
         logger.info("=== END REPORT ===")

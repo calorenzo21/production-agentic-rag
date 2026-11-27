@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from opensearchpy import OpenSearch
+from src.exceptions import OpenSearchException
 from src.services.opensearch.client import OpenSearchClient
 from src.services.opensearch.factory import make_opensearch_client
 
@@ -32,3 +33,19 @@ def test_workers_starting_at_once_create_the_chunk_index_once_then_each_reads_it
     assert sorted(created for created, _ in startups) == [False, False, False, True]
     assert [(stats.get("index_name"), stats.get("document_count")) for _, stats in startups] == [("arxiv-papers-chunks", 0)] * 4
     assert [record.getMessage() for record in caplog.records if record.levelno >= logging.ERROR] == []
+
+
+def test_the_rrf_pipeline_is_found_once_the_client_has_set_it_up(opensearch: OpenSearch) -> None:
+    client = make_opensearch_client.__wrapped__()
+    found_before = client.rrf_pipeline_exists()
+
+    client.setup_indices()
+
+    assert (found_before, client.rrf_pipeline_exists()) == (False, True)
+
+
+def test_looking_the_rrf_pipeline_up_fails_rather_than_finding_none_when_opensearch_does_not_answer(
+    opensearch_down: None,
+) -> None:
+    with pytest.raises(OpenSearchException):
+        make_opensearch_client.__wrapped__().rrf_pipeline_exists()
